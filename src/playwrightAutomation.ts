@@ -34,7 +34,8 @@ export default async function playwrightAutomation(url: string) {
 
     await browserContext.storageState({ path: STORAGE_STATE_PATH });
   } catch (error) {
-    throw new Errorlogger(`No Netflix location update button found for (${url}), maybe link timeout already expired: ${error}`);
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    throw new Error(`no Netflix location update button found for link, maybe link timeout already expired. ${errorMsg}`);
   } finally {
     await browser.close();
   }

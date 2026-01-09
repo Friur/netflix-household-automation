@@ -162,7 +162,8 @@ async function handleEmails() {
               await playwrightAutomation(updatePrimaryLink.toString());
               console.log('✓ Successfully processed Netflix household update');
             } catch (e) {
-              new Errorlogger(`Error processing Netflix link: ${e}`);
+              const errorMsg = e instanceof Error ? e.message : String(e);
+              new Errorlogger(`Error processing Netflix link, ${errorMsg}`);
             }
           } else {
             new Errorlogger('No Netflix update-primary-location link found in email');
