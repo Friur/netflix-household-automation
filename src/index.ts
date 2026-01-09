@@ -144,7 +144,7 @@ async function handleEmails() {
           );
           
           if (!isSubjectMatch) {
-            console.log(`Ignoring email from ${sender} with subject: "${emailSubject}"`);
+            console.log(`Looking email from ${sender} with subject: "${emailSubject}"`);
             return;
           }
 
