@@ -126,7 +126,7 @@ async function handleEmails() {
           // Extract and decode email subject
           const subjectMatch = headers.match(/^Subject: (.+)$/im);
           if (!subjectMatch) {
-            console.log('Email without subject, skipping...');
+            console.log('Email from Netflix found...');
             return;
           }
 
