@@ -1,11 +1,22 @@
-import { existsSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, renameSync } from "fs";
 import { chromium, expect } from '@playwright/test';
 import Errorlogger from './Errorlogger';
 
 const STORAGE_STATE_PATH = './tmp/storageState.json';
 
 export default async function playwrightAutomation(url: string) {
-  const storageStateExists = existsSync(STORAGE_STATE_PATH);
+  let storageStateExists = existsSync(STORAGE_STATE_PATH);
+  
+  // Validate JSON if file exists
+  if (storageStateExists) {
+    try {
+      const content = readFileSync(STORAGE_STATE_PATH, 'utf-8');
+      JSON.parse(content);
+    } catch (error) {
+      new Errorlogger(`Invalid storage state JSON, will start fresh: ${error instanceof Error ? error.message : String(error)}`);
+      storageStateExists = false;
+    }
+  }
 
   const browser = await chromium.launch({
     headless: true,
@@ -32,7 +43,10 @@ export default async function playwrightAutomation(url: string) {
       timeout: 30_000,
     });
 
-    await browserContext.storageState({ path: STORAGE_STATE_PATH });
+    // Atomic write: save to temp file first, then rename
+    const tempPath = `${STORAGE_STATE_PATH}.tmp`;
+    await browserContext.storageState({ path: tempPath });
+    renameSync(tempPath, STORAGE_STATE_PATH);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     throw new Error(`no Netflix location update button found for link, maybe link timeout already expired. ${errorMsg}`);
