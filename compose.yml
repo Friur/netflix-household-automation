@@ -8,7 +8,12 @@ services:
     restart: unless-stopped
     volumes:
       - .:/app
+      - storage-state:/app/tmp
     env_file:
       - .env
     command: /bin/sh -c "yarn install && yarn start"
     stdin_open: true
+
+volumes:
+  storage-state:
+    driver: local
