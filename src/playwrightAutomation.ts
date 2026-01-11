@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, writeFileSync, renameSync } from "fs";
+import { existsSync, readFileSync, renameSync, mkdirSync } from "fs";
 import { chromium, expect } from '@playwright/test';
+import { dirname } from 'path';
 import Errorlogger from './Errorlogger';
 
 const STORAGE_STATE_PATH = './tmp/storageState.json';
@@ -45,7 +46,20 @@ export default async function playwrightAutomation(url: string) {
 
     // Atomic write: save to temp file first, then rename
     const tempPath = `${STORAGE_STATE_PATH}.tmp`;
+    
+    // Ensure directory exists
+    const dir = dirname(STORAGE_STATE_PATH);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    
     await browserContext.storageState({ path: tempPath });
+    
+    // Verify temp file was created before renaming
+    if (!existsSync(tempPath)) {
+      throw new Error(`Failed to create temporary storage state file at ${tempPath}`);
+    }
+    
     renameSync(tempPath, STORAGE_STATE_PATH);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
