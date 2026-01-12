@@ -1,23 +1,11 @@
-import { existsSync, readFileSync, renameSync, mkdirSync } from "fs";
+import { existsSync } from "fs";
 import { chromium, expect } from '@playwright/test';
-import { dirname } from 'path';
 import Errorlogger from './Errorlogger';
 
 const STORAGE_STATE_PATH = './tmp/storageState.json';
 
 export default async function playwrightAutomation(url: string) {
-  let storageStateExists = existsSync(STORAGE_STATE_PATH);
-  
-  // Validate JSON if file exists
-  if (storageStateExists) {
-    try {
-      const content = readFileSync(STORAGE_STATE_PATH, 'utf-8');
-      JSON.parse(content);
-    } catch (error) {
-      new Errorlogger(`Invalid storage state JSON, will start fresh: ${error instanceof Error ? error.message : String(error)}`);
-      storageStateExists = false;
-    }
-  }
+  const storageStateExists = existsSync(STORAGE_STATE_PATH);
 
   const browser = await chromium.launch({
     headless: true,
@@ -44,26 +32,9 @@ export default async function playwrightAutomation(url: string) {
       timeout: 30_000,
     });
 
-    // Atomic write: save to temp file first, then rename
-    const tempPath = `${STORAGE_STATE_PATH}.tmp`;
-    
-    // Ensure directory exists
-    const dir = dirname(STORAGE_STATE_PATH);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
-    }
-    
-    await browserContext.storageState({ path: tempPath });
-    
-    // Verify temp file was created before renaming
-    if (!existsSync(tempPath)) {
-      throw new Error(`Failed to create temporary storage state file at ${tempPath}`);
-    }
-    
-    renameSync(tempPath, STORAGE_STATE_PATH);
+    await browserContext.storageState({ path: STORAGE_STATE_PATH });
   } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    throw new Error(`no Netflix location update button found for link, maybe link timeout already expired. ${errorMsg}`);
+    throw new Errorlogger(`No Netflix location update button found for URL, maybe link timeout already expired: ${error}`);
   } finally {
     await browser.close();
   }
