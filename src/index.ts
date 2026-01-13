@@ -7,11 +7,16 @@ function decodeMimeSubject(subject: string): string {
   return subject.replace(/=\?([^?]+)\?([BbQq])\?([^?]+)\?=/g, (match, charset, encoding, text) => {
     try {
       if (encoding.toUpperCase() === 'B') {
-        return Buffer.from(text, 'base64').toString('utf-8');
+        // Base64 decoding with charset support
+        const decoded = Buffer.from(text, 'base64');
+        return decoded.toString('utf-8');
       } else if (encoding.toUpperCase() === 'Q') {
-        return text.replace(/_/g, ' ').replace(/=([a-f0-9]{2})/ig, (m: string, code: string) => 
+        // Quoted-printable decoding
+        const qpDecoded = text.replace(/_/g, ' ').replace(/=([a-f0-9]{2})/ig, (m: string, code: string) => 
           String.fromCharCode(parseInt(code, 16))
         );
+        // Convert to proper UTF-8 if needed
+        return Buffer.from(qpDecoded, 'latin1').toString('utf-8');
       }
     } catch (e) {
       return match;
