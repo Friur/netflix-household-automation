@@ -108,7 +108,7 @@ async function handleEmails() {
     return;
   }
 
-  console.log(`Searching for emails from: ${targetAddresses.join(', ')}`);
+  // console.log(`Searching for emails from: ${targetAddresses.join(', ')}`);
   const searchCriteria = buildSearchCriteria(targetAddresses);
 
   // Search for emails from target addresses that are unseen
