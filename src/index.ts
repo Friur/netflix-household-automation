@@ -62,10 +62,11 @@ const imap = new Imap({
   port: Number(process.env.IMAP_PORT) ?? 993,
   tls: true,
   tlsOptions: { rejectUnauthorized: false },
-  connTimeout: 3_600_000, // set to 1 Hour to reconnect, if Connection is lost
+  connTimeout: 3_600_000,
   keepalive: {
-    interval: 10000, // Send NOOP commands every 10 seconds
-    idleInterval: 300000, // Re-send IDLE command every 5 minutes
+    interval: 10000,
+    idleInterval: 540000, // Automatic IDLE every 9 minutes (Gmail supports up to 29 min)
+    forceNoop: false, // Use IDLE instead of NOOP when possible
   },
 });
 
@@ -190,7 +191,13 @@ async function handleEmails() {
       }
 
       console.log('IMAP connection is ready, start listening Emails on INBOX');
-      imap.on('mail', () => handleEmails());
+      console.log('📡 IDLE mode enabled - waiting for new emails...');
+      
+      // When new mail arrives (IDLE push notification - handled automatically by keepalive)
+      imap.on('mail', (numNewMsgs: number) => {
+        console.log(`📬 New mail received! (${numNewMsgs} message(s))`);
+        handleEmails();
+      });
     });
   });
 
