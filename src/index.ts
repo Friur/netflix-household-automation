@@ -94,6 +94,7 @@ async function handleEmails() {
 
   if (targetSubjects.length === 0) {
     new Errorlogger('No TARGET_EMAIL_SUBJECTS configured');
+    isProcessing = false;
     return;
   }
 
@@ -105,10 +106,10 @@ async function handleEmails() {
 
   if (targetAddresses.length === 0) {
     new Errorlogger('No TARGET_EMAIL_ADDRESSES configured');
+    isProcessing = false;
     return;
   }
 
-  // console.log(`Searching for emails from: ${targetAddresses.join(', ')}`);
   const searchCriteria = buildSearchCriteria(targetAddresses);
 
   // Search for emails from target addresses that are unseen
