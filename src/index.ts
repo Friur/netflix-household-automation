@@ -64,12 +64,23 @@ const imap = new Imap({
   tlsOptions: { rejectUnauthorized: false },
   connTimeout: 3_600_000, // set to 1 Hour to reconnect, if Connection is lost
   keepalive: {
-    interval: 60000, // Send NOOP every 10 seconds to keep connection alive
-    idleInterval: 600000, // Re-issue IDLE command every 10 seconds
+    interval: 60000, // Send NOOP every 60 seconds to keep connection alive
+    idleInterval: 600000, // Re-issue IDLE command every 10 minutes
   },
 });
 
+// Prevent concurrent email processing
+let isProcessing = false;
+let pendingCheck = false;
+
 async function handleEmails() {
+  // Prevent concurrent execution
+  if (isProcessing) {
+    pendingCheck = true;
+    return;
+  }
+  
+  isProcessing = true;
   // Get target subjects from environment variable (supports multiple subjects separated by |)
   const targetSubjects = (process.env.TARGET_EMAIL_SUBJECTS || process.env.TARGET_EMAIL_SUBJECT || '')
     .split('|')
@@ -99,10 +110,13 @@ async function handleEmails() {
   imap.search(searchCriteria, (err, results) => {
     if (err) {
       new Errorlogger(err);
+      isProcessing = false;
+      return;
     }
 
     // No E-Mails found => skip
     if (!results || !results.length) {
+      isProcessing = false;
       return;
     }
 
@@ -111,6 +125,8 @@ async function handleEmails() {
     fetchingData.on('message', (msg) => {
       let body = '';
       let headers = '';
+      let headersDone = false;
+      let bodyDone = false;
       
       msg.on('body', (stream, info) => {
         stream.on('data', (chunk) => {
@@ -122,7 +138,18 @@ async function handleEmails() {
           }
         });
 
-        stream.on('end', async () => {
+        stream.on('end', () => {
+          if (info.which === 'HEADER') {
+            headersDone = true;
+          } else {
+            bodyDone = true;
+          }
+        });
+      });
+
+      // Process only after message is fully received
+      msg.once('end', async () => {
+        if (!headersDone || !bodyDone) return;
           // Extract and decode email subject
           const subjectMatch = headers.match(/^Subject: (.+)$/im);
           if (!subjectMatch) {
@@ -151,13 +178,14 @@ async function handleEmails() {
           console.log(`✓ Processing Netflix email from ${sender}: "${emailSubject}"`);
           const decodedBody = decodeEmailBody(body);
 
-          // Search specific link, open and click
-          const regex = /https:\/\/www\.netflix\.com\/account\/update-primary-location[^\s<>"'\])]*/i;
-          const match = decodedBody.match(regex);
+          // Extract all links and filter for update-primary-location
+          const allLinksRegex = /https?:\/\/[^\s<>"'\])]+/gi;
+          const allLinks = decodedBody.match(allLinksRegex) || [];
+          const netflixLink = allLinks.find(link => link.includes('update-primary-location'));
 
-          if (match?.[0]) {
+          if (netflixLink) {
             try {
-              const updatePrimaryLink = new URL(match[0]);
+              const updatePrimaryLink = new URL(netflixLink);
               console.log(`Found Netflix link: ${updatePrimaryLink.toString()}`);
               await playwrightAutomation(updatePrimaryLink.toString());
               console.log('✓ Successfully processed Netflix household update');
@@ -170,10 +198,18 @@ async function handleEmails() {
           }
         });
       });
-    });
 
     fetchingData.on('error', (fetchingError) => {
       new Errorlogger(`Fetching Error: ${fetchingError}`);
+    });
+
+    fetchingData.once('end', () => {
+      isProcessing = false;
+      // If there was a pending check request, run it now
+      if (pendingCheck) {
+        pendingCheck = false;
+        handleEmails();
+      }
     });
   });
 }
