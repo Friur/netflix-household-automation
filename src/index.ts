@@ -64,8 +64,8 @@ const imap = new Imap({
   tlsOptions: { rejectUnauthorized: false },
   connTimeout: 3_600_000, // set to 1 Hour to reconnect, if Connection is lost
   keepalive: {
-    interval: 10000, // Send NOOP every 10 seconds to keep connection alive
-    idleInterval: 10000, // Re-issue IDLE command every 10 seconds
+    interval: 60000, // Send NOOP every 10 seconds to keep connection alive
+    idleInterval: 600000, // Re-issue IDLE command every 10 seconds
   },
 });
 
@@ -190,9 +190,6 @@ async function handleEmails() {
       }
 
       console.log('IMAP connection is ready, start listening Emails on INBOX');
-      
-      // Check for new emails immediately on startup
-      handleEmails();
       
       // When new mail arrives (IDLE push notification)
       imap.on('mail', (numNewMsgs: number) => {
