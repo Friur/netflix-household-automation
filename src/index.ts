@@ -127,13 +127,18 @@ async function handleEmails() {
     }
 
     // https://github.com/mscdex/node-imap#:~:text=currently%20open%20mailbox.-,Valid%20options%20properties%20are%3A,-*%20**markSeen**%20%2D%20_boolean_%20%2D%20Mark
-    const fetchingData = imap.fetch(results, { bodies: ['HEADER', 'TEXT'], markSeen: true });
+    const fetchingData = imap.fetch(results, { bodies: ['HEADER', 'TEXT'], markSeen: false });
     fetchingData.on('message', (msg) => {
       let body = '';
       let headers = '';
       let headersDone = false;
       let bodyDone = false;
+      let msgUid: number | undefined;
       
+      msg.on('attributes', (attrs) => {
+        msgUid = attrs.uid;
+      });
+
       msg.on('body', (stream, info) => {
         stream.on('data', (chunk) => {
           const chunkStr = chunk.toString('utf-8');
@@ -177,10 +182,17 @@ async function handleEmails() {
           );
           
           if (!isSubjectMatch) {
-            console.log(`Ignoring email from ${sender} with subject: "${emailSubject}"`);
             return;
           }
 
+          // Mark as read only when both address AND subject match
+          if (msgUid) {
+            imap.addFlags(msgUid, ['\\Seen'], (err) => {
+              if (err) console.log(`Failed to mark email as read: ${err}`);
+            });
+          }
+
+          console.log(`📬 New mail received!`);
           console.log(`✓ Processing Netflix email from ${sender}: "${emailSubject}"`);
           const decodedBody = decodeEmailBody(body);
 
@@ -234,8 +246,7 @@ async function handleEmails() {
       console.log('IMAP connection is ready, start listening Emails on INBOX');
       
       // When new mail arrives (IDLE push notification)
-      imap.on('mail', (numNewMsgs: number) => {
-        console.log(`📬 New mail received! (${numNewMsgs} message(s))`);
+      imap.on('mail', () => {
         handleEmails();
       });
       
