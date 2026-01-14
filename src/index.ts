@@ -78,6 +78,39 @@ const imap = new Imap({
 let isProcessing = false;
 let pendingCheck = false;
 
+// Reconnection control
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const BASE_RECONNECT_DELAY = 5000; // 5 seconds
+let isReconnecting = false;
+
+function reconnect() {
+  if (isReconnecting) return;
+  
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    new Errorlogger(`Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Giving up.`);
+    process.exit(1);
+  }
+  
+  isReconnecting = true;
+  reconnectAttempts++;
+  
+  // Exponential backoff: 5s, 10s, 20s, 40s... (max ~85 min)
+  const delay = Math.min(BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts - 1), 300000);
+  
+  console.log(`🔄 Attempting to reconnect (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}) in ${delay / 1000}s...`);
+  
+  setTimeout(() => {
+    isReconnecting = false;
+    try {
+      imap.connect();
+    } catch (e) {
+      console.log(`Reconnection attempt failed: ${e}`);
+      reconnect();
+    }
+  }, delay);
+}
+
 async function handleEmails() {
   // Prevent concurrent execution
   if (isProcessing) {
@@ -232,37 +265,68 @@ async function handleEmails() {
   });
 }
 
-(function main() {
-  // Connect to the IMAP server
-  imap.connect();
+let pollingInterval: NodeJS.Timeout | null = null;
+
+function setupImapListeners() {
+  // Remove previous listeners to avoid duplicates on reconnect
+  imap.removeAllListeners('ready');
+  imap.removeAllListeners('error');
+  imap.removeAllListeners('end');
+  imap.removeAllListeners('mail');
 
   // start listening to Inbox
   imap.once('ready', () => {
+    // Reset reconnection counter on successful connection
+    reconnectAttempts = 0;
+    
     imap.openBox('INBOX', false, (err) => {
       if (err) {
-        throw new Errorlogger(`open INBOX Error => ${err}`);
+        new Errorlogger(`open INBOX Error => ${err}`);
+        reconnect();
+        return;
       }
 
-      console.log('IMAP connection is ready, start listening Emails on INBOX');
+      console.log('✅ IMAP connection is ready, start listening Emails on INBOX');
       
       // When new mail arrives (IDLE push notification)
       imap.on('mail', () => {
         handleEmails();
       });
       
+      // Clear existing polling interval if any
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
+      }
+      
       // Polling fallback every 10 seconds
-      setInterval(() => {
+      pollingInterval = setInterval(() => {
         handleEmails();
       }, 10_000);
     });
   });
+
   // Handle Imap errors
   imap.once('error', (err: Error) => {
-    throw new Errorlogger(`make sure you E-Mail Provider enabled IMAP and you IMAP Username and Password are correct: ${err}`);
+    new Errorlogger(`IMAP error: ${err.message}. Attempting to reconnect...`);
+    reconnect();
   });
 
-  // End connection on close
+  // Handle connection close - attempt reconnect
   imap.once('end', () => {
-    console.log('IMAP connection ended');
+    console.log('⚠️ IMAP connection ended unexpectedly');
+    
+    // Clear polling interval
+    if (pollingInterval) {
+      clearInterval(pollingInterval);
+      pollingInterval = null;
+    }
+    
+    reconnect();
   });
+}
+
+(function main() {
+  console.log('🚀 Starting Netflix Automation IMAP listener...');
+  setupImapListeners();
+  imap.connect();
 }());
