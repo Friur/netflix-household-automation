@@ -60,19 +60,24 @@ function decodeEmailBody(body: string): string {
   );
 }
 
-const imap = new Imap({
-  user: process.env.IMAP_USER ?? '',
-  password: process.env.IMAP_PASSWORD ?? '',
-  host: process.env.IMAP_HOST ?? '',
-  port: Number(process.env.IMAP_PORT) ?? 993,
-  tls: true,
-  tlsOptions: { rejectUnauthorized: false },
-  connTimeout: 3_600_000, // set to 1 Hour to reconnect, if Connection is lost
-  keepalive: {
-    interval: 60000, // Send NOOP every 60 seconds to keep connection alive
-    idleInterval: 600000, // Re-issue IDLE command every 10 minutes
-  },
-});
+
+function createImapInstance() {
+  return new Imap({
+    user: process.env.IMAP_USER ?? '',
+    password: process.env.IMAP_PASSWORD ?? '',
+    host: process.env.IMAP_HOST ?? '',
+    port: Number(process.env.IMAP_PORT) ?? 993,
+    tls: true,
+    tlsOptions: { rejectUnauthorized: false },
+    connTimeout: 3_600_000, // set to 1 Hour to reconnect, if Connection is lost
+    keepalive: {
+      interval: 60000, // Send NOOP every 60 seconds to keep connection alive
+      idleInterval: 600000, // Re-issue IDLE command every 10 minutes
+    },
+  });
+}
+
+let imap = createImapInstance();
 
 // Prevent concurrent email processing
 let isProcessing = false;
@@ -86,23 +91,22 @@ let isReconnecting = false;
 
 function reconnect() {
   if (isReconnecting) return;
-  
   if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
     new Errorlogger(`Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Giving up.`);
     process.exit(1);
   }
-  
   isReconnecting = true;
   reconnectAttempts++;
-  
-  // Exponential backoff: 5s, 10s, 20s, 40s... (max ~85 min)
   const delay = Math.min(BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts - 1), 300000);
-  
   console.log(`🔄 Attempting to reconnect (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}) in ${delay / 1000}s...`);
-  
   setTimeout(() => {
     isReconnecting = false;
     try {
+      // Destroi a instância antiga e cria uma nova
+      try { imap.end(); } catch {}
+      imap.removeAllListeners && imap.removeAllListeners();
+      imap = createImapInstance();
+      setupImapListeners();
       imap.connect();
     } catch (e) {
       console.log(`Reconnection attempt failed: ${e}`);
@@ -269,10 +273,12 @@ let pollingInterval: NodeJS.Timeout | null = null;
 
 function setupImapListeners() {
   // Remove previous listeners to avoid duplicates on reconnect
-  imap.removeAllListeners('ready');
-  imap.removeAllListeners('error');
-  imap.removeAllListeners('end');
-  imap.removeAllListeners('mail');
+  if (imap.removeAllListeners) {
+    imap.removeAllListeners('ready');
+    imap.removeAllListeners('error');
+    imap.removeAllListeners('end');
+    imap.removeAllListeners('mail');
+  }
 
   // start listening to Inbox
   imap.once('ready', () => {
