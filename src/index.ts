@@ -298,10 +298,11 @@ function setupImapListeners() {
         clearInterval(pollingInterval);
       }
       
-      // Polling fallback every 10 seconds
+      // Polling fallback configurável via .env (POLLING_INTERVAL_SECONDS)
+      const pollingSeconds = Number(process.env.POLLING_INTERVAL_SECONDS) || 5;
       pollingInterval = setInterval(() => {
         handleEmails();
-      }, 10_000);
+      }, pollingSeconds * 1000);
     });
   });
 
