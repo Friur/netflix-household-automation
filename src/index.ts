@@ -106,7 +106,6 @@ function reconnect() {
       try { imap.end(); } catch {}
       imap.removeAllListeners && imap.removeAllListeners();
       imap = createImapInstance();
-      setupImapListeners();
       imap.connect();
     } catch (e) {
       console.log(`Reconnection attempt failed: ${e}`);
@@ -271,15 +270,6 @@ async function handleEmails() {
 
 let pollingInterval: NodeJS.Timeout | null = null;
 
-function setupImapListeners() {
-  // Remove previous listeners to avoid duplicates on reconnect
-  if (imap.removeAllListeners) {
-    imap.removeAllListeners('ready');
-    imap.removeAllListeners('error');
-    imap.removeAllListeners('end');
-    imap.removeAllListeners('mail');
-  }
-
   // start listening to Inbox
   imap.once('ready', () => {
     // Reset reconnection counter on successful connection
@@ -314,26 +304,36 @@ function setupImapListeners() {
 
   // Handle Imap errors
   imap.once('error', (err: Error) => {
-    new Errorlogger(`IMAP error: ${err.message}. Attempting to reconnect...`);
-    reconnect();
+    new Errorlogger(`IMAP error: ${err.message}. Reiniciando processo para restabelecer conexão...`);
+    restartProcess();
   });
 
   // Handle connection close - attempt reconnect
   imap.once('end', () => {
     console.log('⚠️ IMAP connection ended unexpectedly');
-    
     // Clear polling interval
     if (pollingInterval) {
       clearInterval(pollingInterval);
       pollingInterval = null;
     }
-    
-    reconnect();
+    restartProcess();
   });
+
+
+
+function restartProcess() {
+  console.log('♻️ Reiniciando o processo principal para restabelecer a conexão IMAP...');
+  process.on('exit', function () {
+    require('child_process').spawn(process.argv.shift(), process.argv, {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: 'inherit'
+    });
+  });
+  process.exit(0);
 }
 
 (function main() {
   console.log('🚀 Starting Netflix Automation IMAP listener...');
-  setupImapListeners();
   imap.connect();
 }());
