@@ -3,9 +3,9 @@ import path from "path";
 import { chromium, Browser, expect } from "@playwright/test";
 import Errorlogger from "./Errorlogger";
 
-const STORAGE_STATE_PATH = path.resolve(__dirname, "../tmp/storageState.json");
-const TMP_STORAGE_STATE_PATH = path.resolve(__dirname, "../tmp/storageState.tmp.json");
-const LOCK_FILE = path.resolve(__dirname, "../tmp/storage.lock");
+const STORAGE_STATE_PATH = path.join(process.cwd(), "tmp", "storageState.json");
+const TMP_STORAGE_STATE_PATH = path.join(process.cwd(), "tmp", "storageState.tmp.json");
+const LOCK_FILE = path.join(process.cwd(), "tmp", "storage.lock");
 
 let browserInstance: Browser | null = null;
 let contextExecutionCount = 0;
