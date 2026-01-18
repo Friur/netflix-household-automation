@@ -1,12 +1,16 @@
 import fs from "fs";
-import { chromium, expect } from "@playwright/test";
+import path from "path";
+import { chromium, Browser, expect } from "@playwright/test";
 import Errorlogger from "./Errorlogger";
 
-const STORAGE_STATE_PATH = "./tmp/storageState.json";
-const TMP_STORAGE_STATE_PATH = "./tmp/storageState.tmp.json";
-const LOCK_FILE = "./tmp/storage.lock";
+const STORAGE_STATE_PATH = path.resolve(__dirname, "../tmp/storageState.json");
+const TMP_STORAGE_STATE_PATH = path.resolve(__dirname, "../tmp/storageState.tmp.json");
+const LOCK_FILE = path.resolve(__dirname, "../tmp/storage.lock");
 
-// 🔒 Lock de arquivo (impede concorrência entre processos)
+let browserInstance: Browser | null = null;
+let contextExecutionCount = 0;
+const MAX_CONTEXT_REUSE = 10;
+
 function acquireLock(): boolean {
   try {
     fs.writeFileSync(LOCK_FILE, process.pid.toString(), { flag: "wx" });
@@ -20,15 +24,24 @@ function releaseLock() {
   if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
 }
 
-// 🧪 Valida se o storageState é JSON válido
-function isValidStorageState(path: string): boolean {
-  try {
-    if (!fs.existsSync(path)) return false;
-    JSON.parse(fs.readFileSync(path, "utf8"));
-    return true;
-  } catch {
-    return false;
+async function getBrowser(): Promise<Browser> {
+  if (!browserInstance || !browserInstance.isConnected()) {
+    browserInstance = await chromium.launch({
+      headless: true,
+      args: [
+        "--disable-gl-drawing-for-tests",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-extensions",
+        "--no-first-run",
+        "--disable-background-timer-throttling",
+        "--disable-renderer-backgrounding",
+      ],
+    });
+    contextExecutionCount = 0;
   }
+  return browserInstance;
 }
 
 export default async function playwrightAutomation(url: string) {
@@ -36,21 +49,31 @@ export default async function playwrightAutomation(url: string) {
     throw new Errorlogger("Another process is using storageState.json");
   }
 
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--disable-gl-drawing-for-tests"],
-  });
+  // Recicla browser se necessário
+  if (contextExecutionCount >= MAX_CONTEXT_REUSE && browserInstance) {
+    console.log('♻️ Reciclando browser...');
+    await browserInstance.close();
+    browserInstance = null;
+  }
+
+  const browser = await getBrowser();
 
   try {
-    const hasValidStorage = isValidStorageState(STORAGE_STATE_PATH);
-
-    const browserContext = await browser.newContext({
-      storageState: hasValidStorage ? STORAGE_STATE_PATH : undefined,
+    const context = await browser.newContext({
+      storageState: fs.existsSync(STORAGE_STATE_PATH) ? STORAGE_STATE_PATH : undefined,
     });
 
-    const page = await browserContext.newPage();
+    // Configurar bloqueio ANTES de criar page
+    await context.route('**/*', (route) => {
+      const type = route.request().resourceType();
+      if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
+        return route.abort();
+      }
+      route.continue();
+    });
 
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    const page = await context.newPage();
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
 
     await expect(async () => {
       const updatePrimaryButton = page.locator(
@@ -59,15 +82,17 @@ export default async function playwrightAutomation(url: string) {
       await updatePrimaryButton.click({ force: true });
 
       const isSuccessLocator = page.locator('div[data-uia="upl-success"]');
-      await expect(isSuccessLocator).toBeAttached({ timeout: 1000 });
+      await expect(isSuccessLocator).toBeAttached({ timeout: 2000 });
     }).toPass({
-      intervals: [100, 250, 500, 1000],
-      timeout: 30000,
+      intervals: [100, 250, 500],
+      timeout: 10000,
     });
 
-    // 💾 Escrita atômica (anti-corrupção)
-    await browserContext.storageState({ path: TMP_STORAGE_STATE_PATH });
+    await context.storageState({ path: TMP_STORAGE_STATE_PATH });
     fs.renameSync(TMP_STORAGE_STATE_PATH, STORAGE_STATE_PATH);
+    
+    await context.close();
+    contextExecutionCount++;
   } catch (error) {
     throw new Errorlogger(
       `No Netflix location update button found or link expired: ${
@@ -76,6 +101,5 @@ export default async function playwrightAutomation(url: string) {
     );
   } finally {
     releaseLock();
-    await browser.close();
   }
 }
