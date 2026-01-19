@@ -62,11 +62,11 @@ export default async function playwrightAutomation(url: string) {
     const context = await browser.newContext({
       storageState: fs.existsSync(STORAGE_STATE_PATH) ? STORAGE_STATE_PATH : undefined,
     });
-
-    // Configurar bloqueio ANTES de criar page
+    
     await context.route('**/*', (route) => {
       const type = route.request().resourceType();
-      if (['image', 'font', 'media', 'stylesheet'].includes(type)) {
+      // Bloqueia apenas imagens, fontes e vídeos
+      if (['image', 'font', 'media'].includes(type)) {
         return route.abort();
       }
       route.continue();
