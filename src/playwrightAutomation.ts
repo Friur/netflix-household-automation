@@ -60,7 +60,7 @@ export default async function playwrightAutomation(url: string) {
       await updatePrimaryButton.waitFor({ state: 'visible', timeout: 5000});
       await updatePrimaryButton.click({ force: true, noWaitAfter: true});
       const isSuccessLocator = page.locator('div[data-uia="upl-success"]');
-      await isSuccessLocator.waitFor({ state: 'attached', timeout: 2000})
+      await isSuccessLocator.waitFor({ state: 'attached', timeout: 5000})
       await expect(isSuccessLocator).toBeAttached({ timeout: 2000 });
       await page.close();
 
