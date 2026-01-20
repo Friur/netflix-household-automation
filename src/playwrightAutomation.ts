@@ -4,7 +4,6 @@ import { chromium, Browser, expect } from "@playwright/test";
 import Errorlogger from "./Errorlogger";
 
 const STORAGE_STATE_PATH = path.join(process.cwd(), "tmp", "storageState.json");
-const TMP_STORAGE_STATE_PATH = path.join(process.cwd(), "tmp", "storageState.tmp.json");
 
 let browserInstance: Browser | null = null;
 let contextExecutionCount = 0;
@@ -55,21 +54,18 @@ export default async function playwrightAutomation(url: string) {
     const page = await context.newPage();
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
 
-    await expect(async () => {
-      const updatePrimaryButton = page.locator(
-        "button[data-uia='set-primary-location-action']"
+    const updatePrimaryButton = page.locator(
+      "button[data-uia='set-primary-location-action']"
       );
+      await updatePrimaryButton.waitFor({ state: 'visible', timeout: 5000});
       await updatePrimaryButton.click({ force: true });
-
       const isSuccessLocator = page.locator('div[data-uia="upl-success"]');
+      await isSuccessLocator.waitFor({ state: 'attached', timeout: 2000})
       await expect(isSuccessLocator).toBeAttached({ timeout: 2000 });
-    }).toPass({
-      intervals: [100, 250, 500],
-      timeout: 10000,
-    });
+      await page.close();
 
-    await context.storageState({ path: TMP_STORAGE_STATE_PATH });
-    fs.renameSync(TMP_STORAGE_STATE_PATH, STORAGE_STATE_PATH);
+    // ✅ Salva direto no arquivo final - sem rename
+    await context.storageState({ path: STORAGE_STATE_PATH });
     
     await context.close();
     contextExecutionCount++;
