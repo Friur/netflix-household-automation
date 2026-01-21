@@ -56,15 +56,38 @@ export default async function playwrightAutomation(url: string) {
 
     const updatePrimaryButton = page.locator(
       "button[data-uia='set-primary-location-action']"
-      );
-      await updatePrimaryButton.waitFor({ state: 'visible', timeout: 5000});
-      await updatePrimaryButton.click({ force: true, noWaitAfter: true});
-      const isSuccessLocator = page.locator('div[data-uia="upl-success"]');
-      await isSuccessLocator.waitFor({ state: 'attached', timeout: 5000})
-      await expect(isSuccessLocator).toBeAttached({ timeout: 2000 });
-      await page.close();
+    );
+    
+    // Aguarda o botão aparecer
+    await updatePrimaryButton.waitFor({ state: 'visible', timeout: 10000 });
+    
+    // ✅ ADICIONADO: Pequeno delay para garantir que está interativo
+    await page.waitForTimeout(1500);
+    
+    // Tenta click normal primeiro
+    try {
+      await updatePrimaryButton.click({ timeout: 5000, noWaitAfter: true });
+      console.log('✅ Click realizado com sucesso');
+    } catch (clickError) {
+      // Se falhar, força via JavaScript
+      console.log('⚠️ Click normal falhou, forçando via JavaScript...');
+      await page.evaluate(() => {
+        const button = document.querySelector('[data-uia="set-primary-location-action"]') as HTMLElement;
+        if (button) {
+          button.click();
+        }
+      });
+    }
+    
+    // Verifica sucesso
+    const isSuccessLocator = page.locator('div[data-uia="upl-success"]');
+    await isSuccessLocator.waitFor({ state: 'attached', timeout: 5000 });
+    await expect(isSuccessLocator).toBeAttached({ timeout: 2000 });
+    
+    console.log('✅ Localização atualizada com sucesso!');
+    await page.close();
 
-    // ✅ Salva direto no arquivo final - sem rename
+    // Salva estado
     await context.storageState({ path: STORAGE_STATE_PATH });
     
     await context.close();

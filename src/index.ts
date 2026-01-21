@@ -305,7 +305,7 @@ let pollingInterval: NodeJS.Timeout | null = null;
   // Handle Imap errors
   imap.once('error', (err: Error) => {
     new Errorlogger(`IMAP error: ${err.message}. Reiniciando processo para restabelecer conexão...`);
-    restartProcess();
+      ;
   });
 
   // Handle connection close - attempt reconnect
