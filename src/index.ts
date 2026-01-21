@@ -2,6 +2,7 @@ import Imap from 'imap';
 import Errorlogger from './Errorlogger';
 import playwrightAutomation from './playwrightAutomation';
 
+
 // Helper function to decode MIME encoded-word subjects
 function decodeMimeSubject(subject: string): string {
   return subject.replace(/=\?([^?]+)\?([BbQq])\?([^?]+)\?=/g, (match, charset, encoding, text) => {
@@ -25,12 +26,14 @@ function decodeMimeSubject(subject: string): string {
   });
 }
 
+
 // Build search criteria for multiple FROM addresses using OR
 function buildSearchCriteria(addresses: string[]): any[] {
   if (addresses.length === 0) return ['UNSEEN'];
   if (addresses.length === 1) {
     return ['UNSEEN', ['HEADER', 'FROM', addresses[0]]];
   }
+
 
   // Build nested OR for multiple addresses
   let orCriteria: any = ['HEADER', 'FROM', addresses[0]];
@@ -39,6 +42,7 @@ function buildSearchCriteria(addresses: string[]): any[] {
   }
   return ['UNSEEN', orCriteria];
 }
+
 
 // Decode email body (base64 or quoted-printable)
 function decodeEmailBody(body: string): string {
@@ -59,6 +63,7 @@ function decodeEmailBody(body: string): string {
   );
 }
 
+
 function createImapInstance() {
   return new Imap({
     user: process.env.IMAP_USER ?? '',
@@ -75,21 +80,26 @@ function createImapInstance() {
   });
 }
 
+
 let imap = createImapInstance();
+
 
 // Prevent concurrent email processing
 let isProcessing = false;
 let pendingCheck = false;
 
+
 // Fila de emails para processamento sequencial
 let emailQueue: Array<{ msgUid: number, headers: string, body: string }> = [];
 let isProcessingQueue = false;
+
 
 // Reconnection control
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
 const BASE_RECONNECT_DELAY = 5000; // 5 seconds
 let isReconnecting = false;
+
 
 function reconnect() {
   if (isReconnecting) return;
@@ -98,10 +108,12 @@ function reconnect() {
     process.exit(1);
   }
 
+
   isReconnecting = true;
   reconnectAttempts++;
   const delay = Math.min(BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts - 1), 300000);
   console.log(`🔄 Attempting to reconnect (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}) in ${delay / 1000}s...`);
+
 
   setTimeout(() => {
     isReconnecting = false;
@@ -118,8 +130,9 @@ function reconnect() {
   }, delay);
 }
 
-// Nova função para processar um email individual
-async function processIndividualEmail(emailData: { msgUid: number, headers: string, body: string }) {
+
+// Função para processar um email individual
+async function processIndividualEmail(emailData: { msgUid: number, headers: string, body: string }): Promise<void> {
   const { msgUid, headers, body } = emailData;
   
   // Get target subjects from environment variable
@@ -128,6 +141,7 @@ async function processIndividualEmail(emailData: { msgUid: number, headers: stri
     .map(s => s.trim())
     .filter(s => s.length > 0);
 
+
   // Extract and decode email subject
   const subjectMatch = headers.match(/^Subject: (.+)$/im);
   if (!subjectMatch) {
@@ -135,12 +149,15 @@ async function processIndividualEmail(emailData: { msgUid: number, headers: stri
     return;
   }
 
+
   const rawSubject = subjectMatch[1].trim();
   const emailSubject = decodeMimeSubject(rawSubject);
+
 
   // Extract sender
   const fromMatch = headers.match(/^From: (.+)$/im);
   const sender = fromMatch ? fromMatch[1].trim() : 'Unknown';
+
 
   // Check if subject matches
   const isSubjectMatch = targetSubjects.some(targetSubject =>
@@ -148,24 +165,21 @@ async function processIndividualEmail(emailData: { msgUid: number, headers: stri
     targetSubject.toLowerCase().includes(emailSubject.toLowerCase())
   );
 
+
   if (!isSubjectMatch) {
     return;
   }
 
-  // Mark as read
-  if (msgUid) {
-    imap.addFlags(msgUid, ['\\Seen'], (err) => {
-      if (err) console.log(`Failed to mark email as read: ${err}`);
-    });
-  }
 
   console.log(`📬 Processing email from queue (${emailQueue.length} remaining)`);
   console.log(`✓ Processing Netflix email from ${sender}: "${emailSubject}"`);
+
 
   const decodedBody = decodeEmailBody(body);
   const allLinksRegex = /https?:\/\/[^\s<>"'\])]+/gi;
   const allLinks = decodedBody.match(allLinksRegex) || [];
   const netflixLink = allLinks.find(link => link.includes('update-primary-location'));
+
 
   if (netflixLink) {
     try {
@@ -182,32 +196,35 @@ async function processIndividualEmail(emailData: { msgUid: number, headers: stri
   }
 }
 
-// Nova função para processar a fila sequencialmente
+
+// Função para processar a fila sequencialmente
 async function processEmailQueue() {
   if (isProcessingQueue || emailQueue.length === 0) {
     return;
   }
 
+
   isProcessingQueue = true;
   console.log(`🔄 Starting queue processing (${emailQueue.length} emails in queue)`);
+
 
   while (emailQueue.length > 0) {
     const emailData = emailQueue.shift()!;
     
     try {
+      console.log(`⏳ Processing email... ${emailQueue.length} remaining in queue`);
       await processIndividualEmail(emailData);
-      // Adicione um pequeno delay entre cada processamento
-      if (emailQueue.length > 0) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
+      console.log(`✅ Email processed successfully`);
     } catch (error) {
       console.error('❌ Error processing email from queue:', error);
     }
   }
 
+
   console.log('✅ Queue processing completed');
   isProcessingQueue = false;
 }
+
 
 async function handleEmails() {
   // Prevent concurrent execution
@@ -216,7 +233,9 @@ async function handleEmails() {
     return;
   }
 
+
   isProcessing = true;
+
 
   // Get target subjects from environment variable (supports multiple subjects separated by |)
   const targetSubjects = (process.env.TARGET_EMAIL_SUBJECTS || process.env.TARGET_EMAIL_SUBJECT || '')
@@ -224,11 +243,13 @@ async function handleEmails() {
     .map(s => s.trim())
     .filter(s => s.length > 0);
 
+
   if (targetSubjects.length === 0) {
     new Errorlogger('No TARGET_EMAIL_SUBJECTS configured');
     isProcessing = false;
     return;
   }
+
 
   // Get target email addresses from environment variable (supports multiple addresses separated by |)
   const targetAddresses = (process.env.TARGET_EMAIL_ADDRESSES || process.env.TARGET_EMAIL_ADDRESS || '')
@@ -236,13 +257,16 @@ async function handleEmails() {
     .map(s => s.trim())
     .filter(s => s.length > 0);
 
+
   if (targetAddresses.length === 0) {
     new Errorlogger('No TARGET_EMAIL_ADDRESSES configured');
     isProcessing = false;
     return;
   }
 
+
   const searchCriteria = buildSearchCriteria(targetAddresses);
+
 
   // Search for emails from target addresses that are unseen
   imap.search(searchCriteria, (err, results) => {
@@ -252,14 +276,17 @@ async function handleEmails() {
       return;
     }
 
+
     // No E-Mails found => skip
     if (!results || !results.length) {
       isProcessing = false;
       return;
     }
 
-    // https://github.com/mscdex/node-imap#:~:text=currently%20open%20mailbox.-,Valid%20options%20properties%20are%3A,-*%20**markSeen**%20%2D%20_boolean_%20%2D%20Mark
-    const fetchingData = imap.fetch(results, { bodies: ['HEADER', 'TEXT'], markSeen: false });
+
+    // markSeen: true marca emails como lidos imediatamente ao buscar
+    const fetchingData = imap.fetch(results, { bodies: ['HEADER', 'TEXT'], markSeen: true });
+
 
     fetchingData.on('message', (msg) => {
       let body = '';
@@ -268,9 +295,11 @@ async function handleEmails() {
       let bodyDone = false;
       let msgUid: number | undefined;
 
+
       msg.on('attributes', (attrs) => {
         msgUid = attrs.uid;
       });
+
 
       msg.on('body', (stream, info) => {
         stream.on('data', (chunk) => {
@@ -282,6 +311,7 @@ async function handleEmails() {
           }
         });
 
+
         stream.on('end', () => {
           if (info.which === 'HEADER') {
             headersDone = true;
@@ -291,7 +321,7 @@ async function handleEmails() {
         });
       });
 
-      // Em vez de processar imediatamente, adicione à fila
+
       msg.once('end', () => {
         if (!headersDone || !bodyDone || !msgUid) return;
         
@@ -301,15 +331,19 @@ async function handleEmails() {
       });
     });
 
+
     fetchingData.on('error', (fetchingError) => {
       new Errorlogger(`Fetching Error: ${fetchingError}`);
     });
 
+
     fetchingData.once('end', () => {
       isProcessing = false;
 
+
       // Inicia o processamento da fila
       processEmailQueue();
+
 
       // If there was a pending check request, run it now
       if (pendingCheck) {
@@ -320,12 +354,15 @@ async function handleEmails() {
   });
 }
 
+
 let pollingInterval: NodeJS.Timeout | null = null;
+
 
 // start listening to Inbox
 imap.once('ready', () => {
   // Reset reconnection counter on successful connection
   reconnectAttempts = 0;
+
 
   imap.openBox('INBOX', false, (err) => {
     if (err) {
@@ -334,17 +371,21 @@ imap.once('ready', () => {
       return;
     }
 
+
     console.log('✅ IMAP connection is ready, start listening Emails on INBOX');
+
 
     // When new mail arrives (IDLE push notification)
     imap.on('mail', () => {
       handleEmails();
     });
 
+
     // Clear existing polling interval if any
     if (pollingInterval) {
       clearInterval(pollingInterval);
     }
+
 
     // Polling fallback configurável via .env (POLLING_INTERVAL_SECONDS)
     const pollingSeconds = Number(process.env.POLLING_INTERVAL_SECONDS) || 5;
@@ -354,15 +395,18 @@ imap.once('ready', () => {
   });
 });
 
+
 // Handle Imap errors
 imap.once('error', (err: Error) => {
   new Errorlogger(`IMAP error: ${err.message}. Reiniciando processo para restabelecer conexão...`);
   restartProcess();
 });
 
+
 // Handle connection close - attempt reconnect
 imap.once('end', () => {
   console.log('⚠️ IMAP connection ended unexpectedly');
+
 
   // Clear polling interval
   if (pollingInterval) {
@@ -370,13 +414,16 @@ imap.once('end', () => {
     pollingInterval = null;
   }
 
+
   restartProcess();
 });
+
 
 function restartProcess() {
   console.log('♻️ Reiniciando o processo principal para restabelecer a conexão IMAP...');
   const cmd = process.argv[0];
   const args = process.argv.slice(1);
+
 
   process.on('exit', async function () {
     (await import('child_process')).spawn(cmd, args, {
@@ -386,8 +433,10 @@ function restartProcess() {
     });
   });
 
+
   process.exit(0);
 }
+
 
 (function main() {
   console.log('🚀 Starting Netflix Automation IMAP listener...');
