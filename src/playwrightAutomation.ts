@@ -1,7 +1,8 @@
+import 'dotenv/config';
 import fs from "fs";
 import path from "path";
 import { chromium, Browser, expect } from "@playwright/test";
-import Errorlogger from "./Errorlogger";
+import Errorlogger from "./Errorlogger.js";
 
 const STORAGE_STATE_PATH = path.join(process.cwd(), "tmp", "storageState.json");
 
@@ -12,7 +13,7 @@ const MAX_CONTEXT_REUSE = 10;
 async function getBrowser(): Promise<Browser> {
   if (!browserInstance || !browserInstance.isConnected()) {
     browserInstance = await chromium.launch({
-      headless: true,
+      headless: true, // ✅ TRUE para Docker
       args: [
         "--disable-gl-drawing-for-tests",
         "--no-sandbox",
@@ -37,9 +38,11 @@ export default async function playwrightAutomation(url: string) {
   }
 
   const browser = await getBrowser();
+  let context;
+  let page;
 
   try {
-    const context = await browser.newContext({
+    context = await browser.newContext({
       storageState: fs.existsSync(STORAGE_STATE_PATH) ? STORAGE_STATE_PATH : undefined,
     });
     
@@ -51,52 +54,46 @@ export default async function playwrightAutomation(url: string) {
       route.continue();
     });
 
-    const page = await context.newPage();
+    page = await context.newPage();
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
 
     const updatePrimaryButton = page.locator(
       "button[data-uia='set-primary-location-action']"
     );
     
-    // Aguarda o botão aparecer
     await updatePrimaryButton.waitFor({ state: 'visible', timeout: 10000 });
     
-    // ✅ ADICIONADO: Pequeno delay para garantir que está interativo
-    await page.waitForTimeout(1500);
+    // Click direto via JavaScript
+    await page.evaluate(() => {
+      const button = document.querySelector('[data-uia="set-primary-location-action"]') as HTMLElement;
+      if (button) {
+        button.click();
+      }
+    });
+    console.log('✅ Click realizado via JavaScript');
     
-    // Tenta click normal primeiro
-    try {
-      await updatePrimaryButton.click({ timeout: 5000, noWaitAfter: true });
-      console.log('✅ Click realizado com sucesso');
-    } catch (clickError) {
-      // Se falhar, força via JavaScript
-      console.log('⚠️ Click normal falhou, forçando via JavaScript...');
-      await page.evaluate(() => {
-        const button = document.querySelector('[data-uia="set-primary-location-action"]') as HTMLElement;
-        if (button) {
-          button.click();
-        }
-      });
-    }
-    
-    // Verifica sucesso
     const isSuccessLocator = page.locator('div[data-uia="upl-success"]');
     await isSuccessLocator.waitFor({ state: 'attached', timeout: 5000 });
     await expect(isSuccessLocator).toBeAttached({ timeout: 2000 });
     
     console.log('✅ Localização atualizada com sucesso!');
-    await page.close();
-
-    // Salva estado
-    await context.storageState({ path: STORAGE_STATE_PATH });
     
-    await context.close();
+    await context.storageState({ path: STORAGE_STATE_PATH });
     contextExecutionCount++;
+    
   } catch (error) {
+    console.error('❌ Erro na automação:', error);
     throw new Errorlogger(
       `No Netflix location update button found or link expired: ${
         error instanceof Error ? error.message : error
       }`
     );
+  } finally {
+    if (page) {
+      await page.close().catch(() => {});
+    }
+    if (context) {
+      await context.close().catch(() => {});
+    }
   }
 }
