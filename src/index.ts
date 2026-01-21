@@ -323,8 +323,8 @@ let pollingInterval: NodeJS.Timeout | null = null;
 
 function restartProcess() {
   console.log('♻️ Reiniciando o processo principal para restabelecer a conexão IMAP...');
-  process.on('exit', function () {
-    require('child_process').spawn(process.argv.shift(), process.argv, {
+  process.on('exit', async function () {
+    (await import('child_process')).spawn(process.argv.shift(), process.argv, {
       cwd: process.cwd(),
       detached: true,
       stdio: 'inherit'
