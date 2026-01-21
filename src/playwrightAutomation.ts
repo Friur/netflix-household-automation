@@ -45,7 +45,7 @@ export default async function playwrightAutomation(url: string) {
     context = await browser.newContext({
       storageState: fs.existsSync(STORAGE_STATE_PATH) ? STORAGE_STATE_PATH : undefined,
     });
-    
+
     await context.route('**/*', (route) => {
       const type = route.request().resourceType();
       if (['image', 'font', 'media'].includes(type)) {
@@ -60,9 +60,9 @@ export default async function playwrightAutomation(url: string) {
     const updatePrimaryButton = page.locator(
       "button[data-uia='set-primary-location-action']"
     );
-    
+
     await updatePrimaryButton.waitFor({ state: 'visible', timeout: 10000 });
-    
+
     // Click direto via JavaScript
     await page.evaluate(() => {
       const button = document.querySelector('[data-uia="set-primary-location-action"]') as HTMLElement;
@@ -70,17 +70,18 @@ export default async function playwrightAutomation(url: string) {
         button.click();
       }
     });
+
     console.log('✅ Click realizado via JavaScript');
-    
+
     const isSuccessLocator = page.locator('div[data-uia="upl-success"]');
     await isSuccessLocator.waitFor({ state: 'attached', timeout: 5000 });
     await expect(isSuccessLocator).toBeAttached({ timeout: 2000 });
-    
+
     console.log('✅ Localização atualizada com sucesso!');
-    
+
     await context.storageState({ path: STORAGE_STATE_PATH });
     contextExecutionCount++;
-    
+
   } catch (error) {
     console.error('❌ Erro na automação:', error);
     throw new Errorlogger(
