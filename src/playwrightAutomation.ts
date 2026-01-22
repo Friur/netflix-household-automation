@@ -1,14 +1,17 @@
-// import 'dotenv/config';
+import 'dotenv/config';
 import fs from "fs";
 import path from "path";
 import { chromium, Browser, expect } from "@playwright/test";
 import Errorlogger from "./Errorlogger.js";
 
+
 const STORAGE_STATE_PATH = path.join(process.cwd(), "tmp", "storageState.json");
+
 
 let browserInstance: Browser | null = null;
 let contextExecutionCount = 0;
 const MAX_CONTEXT_REUSE = 10;
+
 
 async function getBrowser(): Promise<Browser> {
   if (!browserInstance || !browserInstance.isConnected()) {
@@ -30,6 +33,7 @@ async function getBrowser(): Promise<Browser> {
   return browserInstance;
 }
 
+
 export default async function playwrightAutomation(url: string) {
   if (contextExecutionCount >= MAX_CONTEXT_REUSE && browserInstance) {
     console.log('♻️ Reciclando browser...');
@@ -45,7 +49,7 @@ export default async function playwrightAutomation(url: string) {
     context = await browser.newContext({
       storageState: fs.existsSync(STORAGE_STATE_PATH) ? STORAGE_STATE_PATH : undefined,
     });
-
+    
     await context.route('**/*', (route) => {
       const type = route.request().resourceType();
       if (['image', 'font', 'media'].includes(type)) {
@@ -60,28 +64,29 @@ export default async function playwrightAutomation(url: string) {
     const updatePrimaryButton = page.locator(
       "button[data-uia='set-primary-location-action']"
     );
-
+    
+    // ✅ Aguarda o botão estar visível (já valida tudo)
     await updatePrimaryButton.waitFor({ state: 'visible', timeout: 10000 });
-
-    // Click direto via JavaScript
+    
+    // ✅ Click via JavaScript
     await page.evaluate(() => {
       const button = document.querySelector('[data-uia="set-primary-location-action"]') as HTMLElement;
-      if (button) {
-        button.click();
-      }
+      button?.click();
     });
-
+    
     console.log('✅ Click realizado via JavaScript');
-
+    
+    // Verifica sucesso
     const isSuccessLocator = page.locator('div[data-uia="upl-success"]');
     await isSuccessLocator.waitFor({ state: 'attached', timeout: 5000 });
     await expect(isSuccessLocator).toBeAttached({ timeout: 2000 });
-
+    
     console.log('✅ Localização atualizada com sucesso!');
-
+    
+    // Salva estado apenas em caso de sucesso
     await context.storageState({ path: STORAGE_STATE_PATH });
     contextExecutionCount++;
-
+    
   } catch (error) {
     console.error('❌ Erro na automação:', error);
     throw new Errorlogger(
@@ -90,6 +95,7 @@ export default async function playwrightAutomation(url: string) {
       }`
     );
   } finally {
+    // ✅ SEMPRE executa, com ou sem erro
     if (page) {
       await page.close().catch(() => {});
     }
