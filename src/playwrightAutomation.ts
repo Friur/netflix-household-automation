@@ -82,7 +82,6 @@ export default async function playwrightAutomation(url: string) {
     
     // ✅ Timeout maior para sucesso (10 segundos ao invés de 5)
     const isSuccessLocator = page.locator('div[data-uia="upl-success"]');
-    await isSuccessLocator.waitFor({ state: 'attached', timeout: 10000 });
     await expect(isSuccessLocator).toBeAttached({ timeout: 2000 });
     
     console.log('✅ Localização atualizada com sucesso!');
