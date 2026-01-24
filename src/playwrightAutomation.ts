@@ -4,14 +4,11 @@ import path from "path";
 import { chromium, Browser, expect } from "@playwright/test";
 import Errorlogger from "./Errorlogger.js";
 
-
 const STORAGE_STATE_PATH = path.join(process.cwd(), "tmp", "storageState.json");
-
 
 let browserInstance: Browser | null = null;
 let contextExecutionCount = 0;
 const MAX_CONTEXT_REUSE = 10;
-
 
 async function getBrowser(): Promise<Browser> {
   if (!browserInstance || !browserInstance.isConnected()) {
@@ -32,7 +29,6 @@ async function getBrowser(): Promise<Browser> {
   }
   return browserInstance;
 }
-
 
 export default async function playwrightAutomation(url: string) {
   if (contextExecutionCount >= MAX_CONTEXT_REUSE && browserInstance) {
@@ -65,10 +61,18 @@ export default async function playwrightAutomation(url: string) {
       "button[data-uia='set-primary-location-action']"
     );
     
-    // ✅ Aguarda o botão estar visível (já valida tudo)
+    // ✅ Aguarda estar visível
     await updatePrimaryButton.waitFor({ state: 'visible', timeout: 10000 });
     
-    // ✅ Click via JavaScript
+    // ✅ Aguarda não estar disabled
+    await page.waitForFunction(() => {
+      const button = document.querySelector('[data-uia="set-primary-location-action"]') as HTMLButtonElement;
+      return button && !button.disabled;
+    }, { timeout: 10000 });
+    
+    console.log('✅ Botão pronto para clicar');
+    
+    // Click via JavaScript
     await page.evaluate(() => {
       const button = document.querySelector('[data-uia="set-primary-location-action"]') as HTMLElement;
       button?.click();
@@ -76,9 +80,9 @@ export default async function playwrightAutomation(url: string) {
     
     console.log('✅ Click realizado via JavaScript');
     
-    // Verifica sucesso
+    // ✅ Timeout maior para sucesso (10 segundos ao invés de 5)
     const isSuccessLocator = page.locator('div[data-uia="upl-success"]');
-    await isSuccessLocator.waitFor({ state: 'attached', timeout: 5000 });
+    await isSuccessLocator.waitFor({ state: 'attached', timeout: 10000 });
     await expect(isSuccessLocator).toBeAttached({ timeout: 2000 });
     
     console.log('✅ Localização atualizada com sucesso!');
