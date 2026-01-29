@@ -1,17 +1,14 @@
 // import 'dotenv/config';
 import fs from "fs";
 import path from "path";
-import { chromium, Browser, expect } from "@playwright/test";
+import { chromium, Browser, Page, expect } from "@playwright/test";
 import Errorlogger from "./Errorlogger.js";
 
-
 const STORAGE_STATE_PATH = path.join(process.cwd(), "tmp", "storageState.json");
-
 
 let browserInstance: Browser | null = null;
 let contextExecutionCount = 0;
 const MAX_CONTEXT_REUSE = 10;
-
 
 async function getBrowser(): Promise<Browser> {
   if (!browserInstance || !browserInstance.isConnected()) {
@@ -33,7 +30,6 @@ async function getBrowser(): Promise<Browser> {
   return browserInstance;
 }
 
-
 export default async function playwrightAutomation(url: string) {
   if (contextExecutionCount >= MAX_CONTEXT_REUSE && browserInstance) {
     console.log('♻️ Reciclando browser...');
@@ -43,7 +39,7 @@ export default async function playwrightAutomation(url: string) {
 
   const browser = await getBrowser();
   let context;
-  let page;
+  let page: Page | undefined;
 
   try {
     context = await browser.newContext({
@@ -59,25 +55,19 @@ export default async function playwrightAutomation(url: string) {
     });
 
     page = await context.newPage();
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
+    
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+    
+    await expect(async () => {
+      const updatePrimaryButton = page!.locator("button[data-uia='set-primary-location-action']");
+      await updatePrimaryButton.click({ force: true });
 
-    const updatePrimaryButton = page.locator("button[data-uia='set-primary-location-action']");
-    
-    // ✅ Aguarda botão estar pronto - REDUZIDO para 3s
-    await updatePrimaryButton.waitFor({ state: 'visible', timeout: 3000 });
-    await expect(updatePrimaryButton).toBeEnabled({ timeout: 3000 });
-    
-    console.log('✅ Botão pronto para clicar');
-    
-    // ✅ Click direto (Playwright auto-waiting)
-    await updatePrimaryButton.click({ timeout: 3000 });
-    
-    console.log('✅ Click realizado');
-    
-    // ✅ Aguarda elemento ser ANEXADO ao DOM (não precisa ser visível!)
-    const isSuccessLocator = page.locator('div[data-uia="upl-success"]');
-    
-    await expect(isSuccessLocator).toBeAttached({ timeout: 10000 });
+      const isSuccessLocator = page!.locator('div[data-uia="upl-success"]');
+      await expect(isSuccessLocator).toBeAttached({ timeout: 1000 });
+    }).toPass({
+      intervals: [100, 250, 500, 1_000],
+      timeout: 30_000,
+    });
     
     console.log('✅ Localização atualizada com sucesso!');
     
