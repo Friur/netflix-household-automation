@@ -77,7 +77,7 @@ export default async function playwrightAutomation(url: string) {
     // ✅ Aguarda elemento ser ANEXADO ao DOM (não precisa ser visível!)
     const isSuccessLocator = page.locator('div[data-uia="upl-success"]');
     
-    await expect(isSuccessLocator).toBeAttached({ timeout: 5000 });
+    await expect(isSuccessLocator).toBeAttached({ timeout: 10000 });
     
     console.log('✅ Localização atualizada com sucesso!');
     
