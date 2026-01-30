@@ -55,17 +55,35 @@ export default async function playwrightAutomation(url: string) {
     });
 
     page = await context.newPage();
-    
-    await page.goto(url, { waitUntil: "domcontentloaded" });
-    
-    await expect(async () => {
-      const updatePrimaryButton = page!.locator("button[data-uia='set-primary-location-action']");
-      await updatePrimaryButton.click({ force: true });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
 
+    // ✅ Aguarda o botão estar visível
+    const updatePrimaryButton = page.locator("button[data-uia='set-primary-location-action']");
+    await updatePrimaryButton.waitFor({ state: 'visible', timeout: 5000 });
+    
+    console.log('✅ Botão encontrado');
+
+    // ✅ BLOCO COM RETRY AUTOMÁTICO
+    await expect(async () => {
+      // 1️⃣ Click via JavaScript
+      await page!.evaluate(() => {
+        const button = document.querySelector("button[data-uia='set-primary-location-action']") as HTMLButtonElement;
+        if (button) {
+          button.click();
+        }
+      });
+
+      console.log('🖱️ Click realizado via JavaScript');
+
+      // 2️⃣ Aguarda 500ms para processamento
+      await page!.waitForTimeout(500);
+
+      // 3️⃣ Verifica se o elemento de sucesso apareceu
       const isSuccessLocator = page!.locator('div[data-uia="upl-success"]');
       await expect(isSuccessLocator).toBeAttached({ timeout: 1000 });
+      
     }).toPass({
-      intervals: [100, 250, 500, 1_000],
+      intervals: [100, 250, 500, 1_000, 2_000],
       timeout: 30_000,
     });
     
