@@ -87,6 +87,26 @@ let isProcessingQueue = false;
 
 let pollingInterval: NodeJS.Timeout | null = null;
 
+// Deleta o email pelo UID após processamento
+function deleteEmail(uid: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    imap.addFlags(uid, ['\\Deleted'], (err) => {
+      if (err) {
+        console.error(`❌ Erro ao marcar email UID ${uid} para exclusão:`, err);
+        return reject(err);
+      }
+      imap.expunge((expErr) => {
+        if (expErr) {
+          console.error(`❌ Erro ao expurgar email UID ${uid}:`, expErr);
+          return reject(expErr);
+        }
+        console.log(`🗑️ Email UID ${uid} deletado com sucesso`);
+        resolve();
+      });
+    });
+  });
+}
+
 // Função para processar um email individual
 async function processIndividualEmail(emailData: { msgUid: number, headers: string, body: string }): Promise<void> {
   const { msgUid, headers, body } = emailData;
@@ -160,6 +180,13 @@ async function processEmailQueue() {
       console.log(`⏳ Processing email... ${emailQueue.length} remaining in queue`);
       await processIndividualEmail(emailData);
       console.log(`✅ Email processed successfully`);
+
+      // Deleta o email após processamento bem-sucedido
+      try {
+        await deleteEmail(emailData.msgUid);
+      } catch (delErr) {
+        console.error('⚠️ Falha ao deletar email após processamento:', delErr);
+      }
     } catch (error) {
       console.error('❌ Error processing email from queue:', error);
     }
