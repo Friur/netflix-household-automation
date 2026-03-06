@@ -87,22 +87,17 @@ let isProcessingQueue = false;
 
 let pollingInterval: NodeJS.Timeout | null = null;
 
-// Deleta o email pelo UID após processamento
+// Move o email para a Lixeira pelo UID após processamento
 function deleteEmail(uid: number): Promise<void> {
+  const trashFolder = process.env.IMAP_TRASH_FOLDER || '[Gmail]/Trash';
   return new Promise((resolve, reject) => {
-    imap.addFlags(uid, ['\\Deleted'], (err) => {
+    imap.move(uid, trashFolder, (err) => {
       if (err) {
-        console.error(`❌ Erro ao marcar email UID ${uid} para exclusão:`, err);
+        console.error(`❌ Erro ao mover email UID ${uid} para a lixeira:`, err);
         return reject(err);
       }
-      imap.expunge((expErr) => {
-        if (expErr) {
-          console.error(`❌ Erro ao expurgar email UID ${uid}:`, expErr);
-          return reject(expErr);
-        }
-        console.log(`🗑️ Email UID ${uid} deletado com sucesso`);
-        resolve();
-      });
+      console.log(`🗑️ Email UID ${uid} movido para ${trashFolder}`);
+      resolve();
     });
   });
 }
