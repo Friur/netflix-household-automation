@@ -87,9 +87,55 @@ let isProcessingQueue = false;
 
 let pollingInterval: NodeJS.Timeout | null = null;
 
+// Descobre a pasta da lixeira automaticamente
+let cachedTrashFolder: string | null = null;
+
+function findTrashFolder(): Promise<string> {
+  if (cachedTrashFolder) return Promise.resolve(cachedTrashFolder);
+
+  const envFolder = process.env.IMAP_TRASH_FOLDER;
+  if (envFolder) {
+    cachedTrashFolder = envFolder;
+    return Promise.resolve(envFolder);
+  }
+
+  return new Promise((resolve, reject) => {
+    imap.getBoxes((err, boxes) => {
+      if (err) return reject(err);
+
+      const trashNames = ['Trash', 'Lixeira', 'Papelera', 'Corbeille'];
+
+      // Procura em [Gmail]/ ou [Google Mail]/
+      for (const gmailKey of ['[Gmail]', '[Google Mail]']) {
+        const gmailBoxes = boxes[gmailKey]?.children;
+        if (gmailBoxes) {
+          for (const name of trashNames) {
+            if (gmailBoxes[name]) {
+              cachedTrashFolder = `${gmailKey}/${name}`;
+              console.log(`🗑️ Pasta da lixeira encontrada: ${cachedTrashFolder}`);
+              return resolve(cachedTrashFolder);
+            }
+          }
+        }
+      }
+
+      // Procura na raiz
+      for (const name of trashNames) {
+        if (boxes[name]) {
+          cachedTrashFolder = name;
+          console.log(`🗑️ Pasta da lixeira encontrada: ${cachedTrashFolder}`);
+          return resolve(cachedTrashFolder);
+        }
+      }
+
+      reject(new Error('Pasta da lixeira não encontrada no servidor IMAP'));
+    });
+  });
+}
+
 // Move o email para a Lixeira pelo UID após processamento
-function deleteEmail(uid: number): Promise<void> {
-  const trashFolder = process.env.IMAP_TRASH_FOLDER || '[Gmail]/Trash';
+async function deleteEmail(uid: number): Promise<void> {
+  const trashFolder = await findTrashFolder();
   return new Promise((resolve, reject) => {
     imap.move(uid, trashFolder, (err) => {
       if (err) {
