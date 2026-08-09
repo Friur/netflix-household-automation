@@ -14,18 +14,17 @@ Manually updating and accepting Netflix primary location *sucks*—**especially 
 *Start the Docker container, and you’re good to go!*
 
 ```sh
-# start with docker compose up command
-docker compose up   
+# the first run builds the image; later runs just start it
+docker compose up
 [+] Running 1/1
  ✔ Container imap-netflix-household-automation
 Attaching to imap-netflix-household-automation
-imap-netflix-household-automation  | yarn install v1.22.22
-imap-netflix-household-automation  | [4/4] Resolving packages...
-imap-netflix-household-automation  | Done in 0.15s.
-imap-netflix-household-automation  | yarn run v1.22.22
-imap-netflix-household-automation  | $ tsc --noEmit && tsx --import=extensionless/register src/index.ts
-imap-netflix-household-automation  | IMAP connection is ready, start listening Emails on INBOX
+imap-netflix-household-automation  | 09/08/2026, 13:52:11 [INFO ] Iniciando o listener IMAP da automação Netflix
+imap-netflix-household-automation  | 09/08/2026, 13:52:11 [INFO ] Polling de reserva a cada 60s (o IDLE é o mecanismo primário)
+imap-netflix-household-automation  | 09/08/2026, 13:52:12 [INFO ] Conexão IMAP pronta, escutando e-mails na INBOX
 ```
+
+> After changing anything under `src/`, rebuild the image: `docker compose up -d --build`.
 ## Getting Started
 > **❗️Please note that currently only the INBOX checks for new emails. If there are enough requests to check emails in other folders, this feature will be implemented in the near future.**
 
@@ -38,6 +37,11 @@ No complex setup, no hassle. With just **Docker Compose**, you’re ready to run
 Don't forget to enable IMAP in your email provider. For example, in Gmail, go to Settings > Forwarding and POP/IMAP > IMAP Access, and enable it:
 
 [Gmail Forwarding POP/IMAP Settings](https://mail.google.com/mail/u/2/#settings/fwdandpop)
+
+> **⚠️ If you use 2-Step Verification (Gmail, Outlook and most providers), your normal
+> password will not work over IMAP.** You need to generate an **App Password** and use
+> that as `IMAP_PASSWORD`: [Google App Passwords](https://myaccount.google.com/apppasswords).
+> This is the most common reason the container fails to authenticate on the first run.
 
 ### Installation
 
@@ -68,13 +72,37 @@ docker compose logs -f
 
 ### IMAP Configs
 - **IMAP_USER**: Your IMAP Username
-- **IMAP_PASSWORD**: Your IMAP Password
+- **IMAP_PASSWORD**: Your IMAP Password — **an App Password if you have 2FA enabled** (see the warning above)
 - **IMAP_HOST**: Your IMAP Host e.g. for *GMAIL* is imap.gmail.com
 - **IMAP_PORT**: Your IMAP port connection is usually on port 993
+- **IMAP_TRASH_FOLDER** *(optional)*: Where processed emails are moved. Leave empty to auto-detect — that currently covers Gmail and root-level names (`Trash`, `Lixeira`, `Papelera`, `Corbeille`). On Dovecot/Yahoo set it explicitly, e.g. `INBOX.Trash`.
 
 ### Email Configs
-- **TARGET_EMAIL_ADDRESS**: The email address to monitor e.g. *info@netflix.com*
-- **TARGET_EMAIL_SUBJECT**: The email subject to monitor e.g. *"How to update your Netflix household"*
+Both accept **several values separated by a pipe (`|`)**. The singular forms
+(`TARGET_EMAIL_ADDRESS` / `TARGET_EMAIL_SUBJECT`) still work, but the plural ones take
+precedence.
+
+- **TARGET_EMAIL_ADDRESSES**: The address(es) to monitor. Note the real Netflix sender is on the `account.netflix.com` subdomain, e.g. *`info@account.netflix.com|no-reply@account.netflix.com`*
+- **TARGET_EMAIL_SUBJECTS**: The subject(s) to monitor e.g. *`How to update your Netflix Household|Como atualizar sua Netflix Household`*
+
+> **Note on deleted mail:** every email returned by the search is moved to the Trash folder
+> after being handled — whether it was processed, ignored or failed. This keeps the inbox
+> from filling up; Netflix re-sends the link when it is needed.
+>
+> Because of that, **a wrong `TARGET_EMAIL_SUBJECTS` means the verification link gets
+> trashed unused.** Run once with `DRY_RUN="1"` first (see below) to confirm the filter
+> matches before trusting it.
+
+### Dry run
+- **DRY_RUN** *(default `0`)*: Set to `1` to simulate. The listener still finds the email and
+  logs which subject matched and which link it *would* open — but it does not open the link,
+  does not move anything to Trash, and does not mark the email as read (it fetches with
+  `BODY.PEEK[]`), so the same email is still there for the real run.
+
+### Tuning *(all optional — the defaults suit most setups)*
+- **POLLING_INTERVAL_SECONDS** *(default 60)*: Fallback sweep. IMAP IDLE already pushes new mail in real time, so this is only a safety net. Low values burn server quota without improving latency — Gmail rate-limits IMAP commands.
+- **MAX_RECONNECT_ATTEMPTS** *(default 20)*: Consecutive reconnect failures tolerated before the process exits with code 1 and lets `restart: unless-stopped` take over. The delay between attempts grows from 1s up to a 5min ceiling.
+- **MAX_QUEUE_SIZE** *(default 50)*: Cap on emails waiting to be processed. When exceeded, the oldest is dropped with a warning.
 
 ## License
 

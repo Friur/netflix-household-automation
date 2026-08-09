@@ -1,0 +1,16 @@
+node_modules
+dist
+tmp
+.git
+.gitignore
+.env
+.env.dist
+.idea
+.vscode
+.DS_Store
+.yarn-error.log
+*.md
+LICENSE
+compose.yml
+Dockerfile
+.dockerignore

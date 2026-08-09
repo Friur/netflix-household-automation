@@ -1,18 +1,27 @@
 services:
   imap-netflix-household-automation:
     container_name: imap-netflix-household-automation
-    image: "mcr.microsoft.com/playwright:v1.51.1-jammy"
-    working_dir: /app
+    build:
+      context: .
+    # Recomendado pela Playwright: o Chromium precisa de /dev/shm grande para
+    # não travar em páginas pesadas.
     ipc: host
     network_mode: host
     restart: unless-stopped
     volumes:
-      - .:/app
+      # Só a sessão persiste. O código vem da imagem — o bind mount `.:/app`
+      # anterior expunha .git e .env inteiros ao container.
       - storage-state:/app/tmp
     env_file:
       - .env
-    command: /bin/sh -c "yarn install && yarn start"
     stdin_open: true
+    # Sem isto o driver json-file cresce sem limite e, num host que fica meses
+    # de pé (VM 24/7), acaba enchendo o disco.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 volumes:
   storage-state:

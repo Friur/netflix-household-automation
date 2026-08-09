@@ -4,22 +4,17 @@
   "version": "1.0.0",
   "description": "IMAP Netflix Household automation",
   "license": "MIT",
+  "private": true,
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": "./dist/index.js"
-  },
   "scripts": {
-    "start": "tsc --noEmit && tsx --import=extensionless/register src/index.ts"
-  },
-  "extensionless": {
-    "lookFor": [
-      "ts"
-    ]
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "tsc --noEmit && tsx src/index.ts",
+    "start:dist": "node dist/index.js"
   },
   "repository": {
-    "type": "git"
+    "type": "git",
+    "url": "git+https://github.com/Friur/netflix-household-automation.git"
   },
   "keywords": [
     "node",
@@ -33,13 +28,14 @@
   ],
   "devDependencies": {
     "@types/imap": "^0.8.42",
+    "@types/mailparser": "^3.4.4",
     "@types/node": "^22.13.14",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2"
   },
   "dependencies": {
-    "@playwright/test": "1.51.1",
-    "extensionless": "^1.9.9",
-    "imap": "^0.8.19"
+    "imap": "^0.8.19",
+    "mailparser": "^3.7.2",
+    "playwright": "1.51.1"
   }
 }

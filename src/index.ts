@@ -1,65 +1,49 @@
 import Imap from 'imap';
-import Errorlogger from './Errorlogger';
-import playwrightAutomation from './playwrightAutomation';
+import { simpleParser, type ParsedMail } from 'mailparser';
+import type { Readable } from 'node:stream';
 
-// Helper function to decode MIME encoded-word subjects
-function decodeMimeSubject(subject: string): string {
-  return subject.replace(/=\?([^?]+)\?([BbQq])\?([^?]+)\?=/g, (match, charset, encoding, text) => {
-    try {
-      if (encoding.toUpperCase() === 'B') {
-        // Base64 decoding with charset support
-        const decoded = Buffer.from(text, 'base64');
-        return decoded.toString('utf-8');
-      } else if (encoding.toUpperCase() === 'Q') {
-        // Quoted-printable decoding
-        const qpDecoded = text.replace(/_/g, ' ').replace(/=([a-f0-9]{2})/ig, (m: string, code: string) =>
-          String.fromCharCode(parseInt(code, 16))
-        );
-        // Convert to proper UTF-8 if needed
-        return Buffer.from(qpDecoded, 'latin1').toString('utf-8');
-      }
-    } catch (e) {
-      return match;
-    }
-    return match;
-  });
-}
+import { MailboxError } from './errors.js';
+import { logger, describeCause } from './logger.js';
+import playwrightAutomation, { closeBrowser } from './playwrightAutomation.js';
 
-// Build search criteria for multiple FROM addresses using OR
-function buildSearchCriteria(addresses: string[]): any[] {
-  if (addresses.length === 0) return ['UNSEEN'];
-  if (addresses.length === 1) {
-    return ['UNSEEN', ['HEADER', 'FROM', addresses[0]]];
-  }
+// --- Configuração -----------------------------------------------------------
 
-  // Build nested OR for multiple addresses
-  let orCriteria: any = ['HEADER', 'FROM', addresses[0]];
-  for (let i = 1; i < addresses.length; i++) {
-    orCriteria = ['OR', orCriteria, ['HEADER', 'FROM', addresses[i]]];
-  }
-  return ['UNSEEN', orCriteria];
-}
+/** Rede de segurança para o caso do IDLE não entregar o push. O IDLE é o
+ *  mecanismo primário; sondar de segundo em segundo só gasta cota do servidor. */
+const POLLING_SECONDS = Number(process.env.POLLING_INTERVAL_SECONDS) || 60;
+/** Teto da fila. Se o Playwright travar, o polling continua empilhando. */
+const MAX_QUEUE_SIZE = Number(process.env.MAX_QUEUE_SIZE) || 50;
 
-// Decode email body (base64 or quoted-printable)
-function decodeEmailBody(body: string): string {
-  if (body.includes('Content-Transfer-Encoding: base64')) {
-    const base64Match = body.match(/Content-Transfer-Encoding: base64\s*\n\s*\n([A-Za-z0-9+/=\s]+)/);
-    if (base64Match?.[1]) {
-      try {
-        const base64Content = base64Match[1].replace(/\s/g, '');
-        return Buffer.from(base64Content, 'base64').toString('utf-8');
-      } catch (e) {
-        new Errorlogger(`Base64 decode error: ${e}`);
-      }
+/**
+ * Modo de simulação, para conferir a configuração antes de confiar nela.
+ * Registra o que faria, mas não clica no link nem move o e-mail para a lixeira —
+ * e não marca como lido, para o e-mail continuar disponível na rodada real.
+ */
+const DRY_RUN = process.env.DRY_RUN === '1' || process.env.DRY_RUN === 'true';
+
+const RECONNECT_BASE_MS = 1_000;
+const RECONNECT_MAX_MS = 300_000;
+const MAX_RECONNECT_ATTEMPTS = Number(process.env.MAX_RECONNECT_ATTEMPTS) || 20;
+/** Quanto uma conexão precisa durar para o orçamento de reconexão ser zerado. */
+const STABLE_CONNECTION_MS = 60_000;
+/** Prazo máximo para o desligamento gracioso antes de sair à força. */
+const SHUTDOWN_TIMEOUT_MS = 5_000;
+/** Prazo máximo para um ciclo de busca+download de e-mails terminar. */
+const FETCH_TIMEOUT_MS = 120_000;
+
+/** Lê uma variável de lista separada por `|`, aceitando o nome no plural
+ *  (preferido) ou no singular, que é o que a documentação antiga usava. */
+function readList(...names: string[]): string[] {
+  for (const name of names) {
+    const raw = process.env[name];
+    if (raw && raw.trim().length > 0) {
+      return raw.split('|').map((item) => item.trim()).filter((item) => item.length > 0);
     }
   }
-  // Handle quoted-printable encoding
-  return body.replace(/=(\r?\n|$)/g, '').replace(/=([a-f0-9]{2})/ig, (m, code) =>
-    String.fromCharCode(parseInt(code, 16))
-  );
+  return [];
 }
 
-function createImapInstance() {
+function createImapInstance(): Imap {
   return new Imap({
     user: process.env.IMAP_USER ?? '',
     password: process.env.IMAP_PASSWORD ?? '',
@@ -67,357 +51,492 @@ function createImapInstance() {
     port: Number(process.env.IMAP_PORT) ?? 993,
     tls: true,
     tlsOptions: { rejectUnauthorized: false },
-    connTimeout: 3_600_000, // set to 1 Hour to reconnect, if Connection is lost
+    // Prazo para ESTABELECER a conexão (não é timer de reconexão). Precisa ser
+    // curto para que um handshake travado falhe rápido e caia no backoff.
+    connTimeout: 30_000,
+    authTimeout: 15_000,
     keepalive: {
-      interval: 60000, // Send NOOP every 60 seconds to keep connection alive
-      idleInterval: 600000, // Re-issue IDLE command every 10 minutes
+      interval: 60_000, // NOOP a cada 60s para manter a conexão viva
+      idleInterval: 600_000, // reemite o IDLE a cada 10 minutos
     },
   });
 }
 
-let imap = createImapInstance();
+// --- Estado -----------------------------------------------------------------
 
-// Prevent concurrent email processing
-let isProcessing = false;
-let pendingCheck = false;
+type QueueItem = { uid: number; mail: ParsedMail };
+/** O que aconteceu com um e-mail. Governa o log — nunca a deleção. */
+type Outcome = 'processado' | 'ignorado' | 'falhou' | 'simulado';
 
-// Fila de emails para processamento sequencial
-let emailQueue: Array<{ msgUid: number, headers: string, body: string }> = [];
-let isProcessingQueue = false;
+// Recriada a cada reconexão: uma conexão node-imap encerrada não é reutilizável.
+let imap!: Imap;
+
+let isSearching = false;
+let searchAgainWhenDone = false;
+
+const queue: QueueItem[] = [];
+let isDrainingQueue = false;
 
 let pollingInterval: NodeJS.Timeout | null = null;
+let reconnectTimer: NodeJS.Timeout | null = null;
+let stabilityTimer: NodeJS.Timeout | null = null;
+let connectionGeneration = 0;
+let reconnectAttempts = 0;
+let isShuttingDown = false;
 
-// Descobre a pasta da lixeira automaticamente
 let cachedTrashFolder: string | null = null;
+
+// --- Lixeira ----------------------------------------------------------------
 
 function findTrashFolder(): Promise<string> {
   if (cachedTrashFolder) return Promise.resolve(cachedTrashFolder);
 
-  const envFolder = process.env.IMAP_TRASH_FOLDER;
-  if (envFolder) {
-    cachedTrashFolder = envFolder;
-    return Promise.resolve(envFolder);
+  const configured = process.env.IMAP_TRASH_FOLDER;
+  if (configured) {
+    cachedTrashFolder = configured;
+    return Promise.resolve(configured);
   }
 
   return new Promise((resolve, reject) => {
     imap.getBoxes((err, boxes) => {
-      if (err) return reject(err);
+      if (err) return reject(new MailboxError('Não foi possível listar as pastas', { cause: err }));
 
-      const trashNames = ['Trash', 'Lixeira', 'Papelera', 'Corbeille'];
+      const candidates = ['Trash', 'Lixeira', 'Papelera', 'Corbeille'];
 
-      // Procura em [Gmail]/ ou [Google Mail]/
       for (const gmailKey of ['[Gmail]', '[Google Mail]']) {
-        const gmailBoxes = boxes[gmailKey]?.children;
-        if (gmailBoxes) {
-          for (const name of trashNames) {
-            if (gmailBoxes[name]) {
-              cachedTrashFolder = `${gmailKey}/${name}`;
-              console.log(`🗑️ Pasta da lixeira encontrada: ${cachedTrashFolder}`);
-              return resolve(cachedTrashFolder);
-            }
+        const children = boxes[gmailKey]?.children;
+        if (!children) continue;
+        for (const name of candidates) {
+          if (children[name]) {
+            cachedTrashFolder = `${gmailKey}/${name}`;
+            logger.info(`Pasta da lixeira encontrada: ${cachedTrashFolder}`);
+            return resolve(cachedTrashFolder);
           }
         }
       }
 
-      // Procura na raiz
-      for (const name of trashNames) {
+      for (const name of candidates) {
         if (boxes[name]) {
           cachedTrashFolder = name;
-          console.log(`🗑️ Pasta da lixeira encontrada: ${cachedTrashFolder}`);
+          logger.info(`Pasta da lixeira encontrada: ${cachedTrashFolder}`);
           return resolve(cachedTrashFolder);
         }
       }
 
-      reject(new Error('Pasta da lixeira não encontrada no servidor IMAP'));
+      reject(new MailboxError('Pasta da lixeira não encontrada; defina IMAP_TRASH_FOLDER no .env'));
     });
   });
 }
 
-// Move o email para a Lixeira pelo UID após processamento
-async function deleteEmail(uid: number): Promise<void> {
-  const trashFolder = await findTrashFolder();
-  return new Promise((resolve, reject) => {
-    imap.move(uid, trashFolder, (err) => {
-      if (err) {
-        console.error(`❌ Erro ao mover email UID ${uid} para a lixeira:`, err);
-        return reject(err);
-      }
-      console.log(`🗑️ Email UID ${uid} movido para ${trashFolder}`);
-      resolve();
-    });
-  });
+function moveToTrash(uid: number): Promise<void> {
+  return findTrashFolder().then(
+    (folder) =>
+      new Promise<void>((resolve, reject) => {
+        imap.move(uid, folder, (err) => {
+          if (err) return reject(new MailboxError(`Falha ao mover o UID ${uid}`, { cause: err }));
+          logger.info(`E-mail UID ${uid} movido para ${folder}`);
+          resolve();
+        });
+      }),
+  );
 }
 
-// Função para processar um email individual
-async function processIndividualEmail(emailData: { msgUid: number, headers: string, body: string }): Promise<void> {
-  const { msgUid, headers, body } = emailData;
-  
-  // Get target subjects from environment variable
-  const targetSubjects = (process.env.TARGET_EMAIL_SUBJECTS || process.env.TARGET_EMAIL_SUBJECT || '')
-    .split('|')
-    .map(s => s.trim())
-    .filter(s => s.length > 0);
+// --- Processamento ----------------------------------------------------------
 
-  // Extract and decode email subject
-  const subjectMatch = headers.match(/^Subject: (.+)$/im);
-  if (!subjectMatch) {
-    console.log('Email from Netflix found...');
-    return;
-  }
+async function processEmail({ mail }: QueueItem): Promise<Outcome> {
+  const targetSubjects = readList('TARGET_EMAIL_SUBJECTS', 'TARGET_EMAIL_SUBJECT');
+  const subject = mail.subject?.trim() ?? '';
+  const sender = mail.from?.text ?? 'remetente desconhecido';
 
-  const rawSubject = subjectMatch[1].trim();
-  const emailSubject = decodeMimeSubject(rawSubject);
-
-  // Extract sender
-  const fromMatch = headers.match(/^From: (.+)$/im);
-  const sender = fromMatch ? fromMatch[1].trim() : 'Unknown';
-
-  // Check if subject matches
-  const isSubjectMatch = targetSubjects.some(targetSubject =>
-    emailSubject.toLowerCase().includes(targetSubject.toLowerCase()) ||
-    targetSubject.toLowerCase().includes(emailSubject.toLowerCase())
+  // Comparação nos dois sentidos, como no comportamento original.
+  const matchesSubject = targetSubjects.some(
+    (target) =>
+      subject.toLowerCase().includes(target.toLowerCase()) ||
+      target.toLowerCase().includes(subject.toLowerCase()),
   );
 
-  if (!isSubjectMatch) {
-    return;
+  if (!matchesSubject) {
+    logger.info(`Assunto fora do filtro, nada a fazer: "${subject}" (de ${sender})`);
+    return 'ignorado';
   }
 
-  console.log(`📬 Processing email from queue (${emailQueue.length} remaining)`);
-  console.log(`✓ Processing Netflix email from ${sender}: "${emailSubject}"`);
+  logger.info(`Processando e-mail de ${sender}: "${subject}"`);
 
-  const decodedBody = decodeEmailBody(body);
-  const allLinksRegex = /https?:\/\/[^\s<>"'\])]+/gi;
-  const allLinks = decodedBody.match(allLinksRegex) || [];
-  const netflixLink = allLinks.find(link => link.includes('update-primary-location'));
+  // O link pode estar na parte de texto ou na de HTML, dependendo do provedor.
+  const body = `${mail.text ?? ''}\n${mail.html || ''}`;
+  const links = body.match(/https?:\/\/[^\s<>"'\])]+/gi) ?? [];
+  const target = links.find((link) => link.includes('update-primary-location'));
 
-  if (netflixLink) {
-    try {
-      const updatePrimaryLink = new URL(netflixLink);
-      console.log(`Found Netflix link: ${updatePrimaryLink.toString()}`);
-      await playwrightAutomation(updatePrimaryLink.toString());
-      console.log('✓ Successfully processed Netflix household update');
-    } catch (e) {
-      const errorMsg = e instanceof Error ? e.message : String(e);
-      new Errorlogger(`Error processing Netflix link, ${errorMsg}`);
+  if (!target) {
+    logger.warn('Nenhum link de update-primary-location encontrado no e-mail');
+    return 'ignorado';
+  }
+
+  try {
+    const url = new URL(target).toString();
+    logger.info(`Link da Netflix encontrado: ${url}`);
+
+    if (DRY_RUN) {
+      logger.info('[SIMULAÇÃO] O link NÃO foi aberto e o e-mail NÃO será apagado');
+      return 'simulado';
     }
-  } else {
-    new Errorlogger('No Netflix update-primary-location link found in email');
+
+    await playwrightAutomation(url);
+    return 'processado';
+  } catch (cause) {
+    logger.error('Não foi possível atualizar a residência', cause);
+    return 'falhou';
   }
 }
 
-// Função para processar a fila sequencialmente
-async function processEmailQueue() {
-  if (isProcessingQueue || emailQueue.length === 0) {
-    return;
+function enqueue(item: QueueItem) {
+  if (queue.length >= MAX_QUEUE_SIZE) {
+    // Descarta o mais antigo: um link de verificação recente vale mais que um
+    // que já ficou parado na fila.
+    const dropped = queue.shift();
+    logger.warn(`Fila cheia (${MAX_QUEUE_SIZE}); descartando o e-mail UID ${dropped?.uid}`);
   }
+  queue.push(item);
+  logger.info(`E-mail UID ${item.uid} na fila (${queue.length} aguardando)`);
+}
 
-  isProcessingQueue = true;
-  console.log(`🔄 Starting queue processing (${emailQueue.length} emails in queue)`);
+async function drainQueue(): Promise<void> {
+  if (isDrainingQueue || queue.length === 0) return;
+  isDrainingQueue = true;
 
-  while (emailQueue.length > 0) {
-    const emailData = emailQueue.shift()!;
-    
-    try {
-      console.log(`⏳ Processing email... ${emailQueue.length} remaining in queue`);
-      await processIndividualEmail(emailData);
-      console.log(`✅ Email processed successfully`);
+  try {
+    while (queue.length > 0) {
+      const item = queue.shift()!;
 
-      // Deleta o email após processamento bem-sucedido
+      let outcome: Outcome;
       try {
-        await deleteEmail(emailData.msgUid);
-      } catch (delErr) {
-        console.error('⚠️ Falha ao deletar email após processamento:', delErr);
+        outcome = await processEmail(item);
+      } catch (cause) {
+        outcome = 'falhou';
+        logger.error(`Erro inesperado no e-mail UID ${item.uid}`, cause);
       }
-    } catch (error) {
-      console.error('❌ Error processing email from queue:', error);
-    }
-  }
 
-  console.log('✅ Queue processing completed');
-  isProcessingQueue = false;
+      if (outcome === 'processado') {
+        logger.info(`E-mail UID ${item.uid}: residência atualizada`);
+      } else if (outcome === 'falhou') {
+        logger.warn(`E-mail UID ${item.uid}: processamento FALHOU`);
+      }
+
+      if (DRY_RUN) {
+        logger.info(`[SIMULAÇÃO] E-mail UID ${item.uid} permanece na caixa, não lido`);
+        continue;
+      }
+
+      // Política de caixa de entrada, definida pelo dono do projeto: todo e-mail
+      // que a busca retornar vai para a lixeira — processado, ignorado ou com
+      // falha. É intencional, para a caixa não encher; a Netflix reenvia o link
+      // quando é preciso. O `outcome` acima governa só o que é registrado.
+      try {
+        await moveToTrash(item.uid);
+      } catch (cause) {
+        logger.error(`Não foi possível mover o e-mail UID ${item.uid} para a lixeira`, cause);
+      }
+    }
+  } finally {
+    isDrainingQueue = false;
+  }
 }
 
-async function handleEmails() {
-  // Prevent concurrent execution
-  if (isProcessing) {
-    pendingCheck = true;
-    return;
+// --- Busca de e-mails -------------------------------------------------------
+
+/** Monta o critério IMAP, aninhando OR quando há mais de um remetente. */
+function buildSearchCriteria(addresses: string[]): unknown[] {
+  if (addresses.length === 0) return ['UNSEEN'];
+
+  let criteria: unknown = ['HEADER', 'FROM', addresses[0]];
+  for (let i = 1; i < addresses.length; i += 1) {
+    criteria = ['OR', criteria, ['HEADER', 'FROM', addresses[i]]];
   }
+  return ['UNSEEN', criteria];
+}
 
-  isProcessing = true;
+function fetchAndParse(uids: number[]): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
 
-  // Get target subjects from environment variable (supports multiple subjects separated by |)
-  const targetSubjects = (process.env.TARGET_EMAIL_SUBJECTS || process.env.TARGET_EMAIL_SUBJECT || '')
-    .split('|')
-    .map(s => s.trim())
-    .filter(s => s.length > 0);
+    // Sem este guarda, um servidor que para no meio da entrega (ou devolve
+    // menos atributos do que o node-imap pediu, caso em que a mensagem nunca
+    // emite 'end') deixaria esta promise pendente para sempre — e com ela
+    // isSearching travado em true, parando o listener em silêncio.
+    const guard = setTimeout(() => {
+      finish(`A busca de ${uids.length} e-mail(s) não terminou em ${FETCH_TIMEOUT_MS / 1_000}s; ciclo abortado`);
+    }, FETCH_TIMEOUT_MS);
 
-  if (targetSubjects.length === 0) {
-    new Errorlogger('No TARGET_EMAIL_SUBJECTS configured');
-    isProcessing = false;
-    return;
-  }
-
-  // Get target email addresses from environment variable (supports multiple addresses separated by |)
-  const targetAddresses = (process.env.TARGET_EMAIL_ADDRESSES || process.env.TARGET_EMAIL_ADDRESS || '')
-    .split('|')
-    .map(s => s.trim())
-    .filter(s => s.length > 0);
-
-  if (targetAddresses.length === 0) {
-    new Errorlogger('No TARGET_EMAIL_ADDRESSES configured');
-    isProcessing = false;
-    return;
-  }
-
-  const searchCriteria = buildSearchCriteria(targetAddresses);
-
-  // Search for emails from target addresses that are unseen
-  imap.search(searchCriteria, (err, results) => {
-    if (err) {
-      new Errorlogger(err);
-      isProcessing = false;
-      return;
+    function finish(errorMessage?: string) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(guard);
+      if (errorMessage) logger.error(errorMessage);
+      resolve();
     }
 
-    // No E-Mails found => skip
-    if (!results || !results.length) {
-      isProcessing = false;
-      return;
-    }
+    const pending: Promise<void>[] = [];
+    // Em simulação não marcamos como lido: o e-mail precisa continuar UNSEEN
+    // para a rodada real encontrá-lo depois.
+    const fetcher = imap.fetch(uids, { bodies: '', markSeen: !DRY_RUN });
 
-    // markSeen: true marca emails como lidos imediatamente ao buscar
-    const fetchingData = imap.fetch(results, { bodies: ['HEADER', 'TEXT'], markSeen: true });
-
-    fetchingData.on('message', (msg) => {
-      let body = '';
-      let headers = '';
-      let headersDone = false;
-      let bodyDone = false;
-      let msgUid: number | undefined;
+    fetcher.on('message', (msg) => {
+      let uid: number | undefined;
+      let parsing: Promise<ParsedMail> | undefined;
 
       msg.on('attributes', (attrs) => {
-        msgUid = attrs.uid;
+        uid = attrs.uid;
       });
 
-      msg.on('body', (stream, info) => {
-        stream.on('data', (chunk) => {
-          const chunkStr = chunk.toString('utf-8');
-          if (info.which === 'HEADER') {
-            headers += chunkStr;
-          } else {
-            body += chunkStr;
-          }
-        });
-
-        stream.on('end', () => {
-          if (info.which === 'HEADER') {
-            headersDone = true;
-          } else {
-            bodyDone = true;
-          }
-        });
+      msg.on('body', (stream) => {
+        parsing = simpleParser(stream as Readable);
       });
 
-      msg.once('end', () => {
-        if (!headersDone || !bodyDone || !msgUid) return;
-        
-        // Adiciona o email à fila
-        emailQueue.push({ msgUid, headers, body });
-        console.log(`📬 Email adicionado à fila (total na fila: ${emailQueue.length})`);
-      });
+      pending.push(
+        new Promise<void>((done) => {
+          msg.once('end', () => {
+            void (async () => {
+              try {
+                if (!parsing) {
+                  logger.warn('Mensagem sem corpo; descartada');
+                  return;
+                }
+                const mail = await parsing;
+                if (uid === undefined) {
+                  logger.warn(`Mensagem sem UID ("${mail.subject ?? 'sem assunto'}"); descartada`);
+                  return;
+                }
+                enqueue({ uid, mail });
+              } catch (cause) {
+                logger.error('Falha ao interpretar o e-mail', cause);
+              } finally {
+                done();
+              }
+            })();
+          });
+        }),
+      );
     });
 
-    fetchingData.on('error', (fetchingError) => {
-      new Errorlogger(`Fetching Error: ${fetchingError}`);
+    fetcher.once('error', (cause) => {
+      logger.error('Erro ao buscar os e-mails', cause);
     });
 
-    fetchingData.once('end', () => {
-      isProcessing = false;
-
-      // Inicia o processamento da fila
-      processEmailQueue();
-
-      // If there was a pending check request, run it now
-      if (pendingCheck) {
-        pendingCheck = false;
-        handleEmails();
-      }
+    fetcher.once('end', () => {
+      void Promise.all(pending).then(() => finish());
     });
   });
 }
 
-// ✅ Função para reiniciar o processo completo
-function restartProcess() {
-  console.log('♻️ Reiniciando o processo principal para restabelecer a conexão IMAP...');
-  const cmd = process.argv[0];
-  const args = process.argv.slice(1);
+async function handleEmails(): Promise<void> {
+  if (isSearching) {
+    searchAgainWhenDone = true;
+    return;
+  }
 
-  process.on('exit', async function () {
-    (await import('child_process')).spawn(cmd, args, {
-      cwd: process.cwd(),
-      detached: true,
-      stdio: 'inherit'
+  const targetSubjects = readList('TARGET_EMAIL_SUBJECTS', 'TARGET_EMAIL_SUBJECT');
+  if (targetSubjects.length === 0) {
+    logger.error('TARGET_EMAIL_SUBJECTS não configurado; nada será processado');
+    return;
+  }
+
+  const targetAddresses = readList('TARGET_EMAIL_ADDRESSES', 'TARGET_EMAIL_ADDRESS');
+  if (targetAddresses.length === 0) {
+    logger.error('TARGET_EMAIL_ADDRESSES não configurado; nada será processado');
+    return;
+  }
+
+  isSearching = true;
+  try {
+    const uids = await new Promise<number[]>((resolve, reject) => {
+      imap.search(buildSearchCriteria(targetAddresses), (err, results) => {
+        if (err) return reject(new MailboxError('Busca IMAP falhou', { cause: err }));
+        resolve(results ?? []);
+      });
     });
-  });
 
-  process.exit(0);
+    if (uids.length > 0) {
+      await fetchAndParse(uids);
+    }
+  } catch (cause) {
+    logger.error('Falha ao consultar a caixa de entrada', cause);
+  } finally {
+    isSearching = false;
+  }
+
+  await drainQueue();
+
+  if (searchAgainWhenDone) {
+    searchAgainWhenDone = false;
+    await handleEmails();
+  }
 }
 
-// ✅ Configura os handlers do IMAP
-function setupImapHandlers() {
-  // start listening to Inbox
+// --- Conexão e reconexão ----------------------------------------------------
+// Backoff exponencial com jitter, recriando a instância do Imap. O
+// `restart: unless-stopped` do Docker fica como último recurso: só desistimos
+// depois de MAX_RECONNECT_ATTEMPTS falhas seguidas.
+
+function teardownConnection() {
+  if (pollingInterval) {
+    clearInterval(pollingInterval);
+    pollingInterval = null;
+  }
+  if (stabilityTimer) {
+    clearTimeout(stabilityTimer);
+    stabilityTimer = null;
+  }
+  // O callback de imap.search() nunca volta numa conexão morta; sem isto o
+  // guard de concorrência ficaria travado em true para sempre.
+  isSearching = false;
+  searchAgainWhenDone = false;
+}
+
+function scheduleReconnect(reason: string) {
+  if (isShuttingDown || reconnectTimer) return;
+
+  reconnectAttempts += 1;
+
+  if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+    logger.error(
+      `${reason}. ${MAX_RECONNECT_ATTEMPTS} tentativas de reconexão falharam em sequência; ` +
+        'encerrando com código 1 para o supervisor assumir.',
+    );
+    process.exit(1);
+  }
+
+  const exponential = Math.min(RECONNECT_BASE_MS * 2 ** (reconnectAttempts - 1), RECONNECT_MAX_MS);
+  // Jitter de 50–100%, para várias instâncias não baterem no servidor juntas.
+  const delay = Math.round(exponential * (0.5 + Math.random() * 0.5));
+
+  logger.warn(
+    `${reason}. Reconectando em ${(delay / 1000).toFixed(1)}s ` +
+      `(tentativa ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`,
+  );
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectImap();
+  }, delay);
+}
+
+function connectImap() {
+  if (isShuttingDown) return;
+
+  const generation = ++connectionGeneration;
+  // Handlers de conexões antigas se auto-silenciam: sem isto, o `close` de uma
+  // conexão morta agendaria reconexão em cima de uma conexão nova e saudável.
+  const isStale = () => generation !== connectionGeneration;
+
+  imap = createImapInstance();
+
+  const onDisconnect = (reason: string) => {
+    if (isStale()) return;
+    teardownConnection();
+    scheduleReconnect(reason);
+  };
+
   imap.once('ready', () => {
+    if (isStale()) return;
+
     imap.openBox('INBOX', false, (err) => {
+      if (isStale()) return;
+
       if (err) {
-        new Errorlogger(`open INBOX Error => ${err}`);
-        restartProcess(); // ✅ Usa restartProcess em vez de reconnect
+        logger.error('Erro ao abrir a INBOX', err);
+        try {
+          imap.end();
+        } catch {
+          // a conexão já pode estar caindo; o agendamento abaixo cobre o caso
+        }
+        onDisconnect('Falha ao abrir a INBOX');
         return;
       }
 
-      console.log('✅ IMAP connection is ready, start listening Emails on INBOX');
+      logger.info('Conexão IMAP pronta, escutando e-mails na INBOX');
 
-      // When new mail arrives (IDLE push notification)
+      // O orçamento de reconexão só zera depois que a conexão provar que se
+      // mantém de pé — senão um servidor que aceita e derruba em seguida nunca
+      // sofreria backoff nenhum.
+      stabilityTimer = setTimeout(() => {
+        stabilityTimer = null;
+        reconnectAttempts = 0;
+      }, STABLE_CONNECTION_MS);
+
       imap.on('mail', () => {
-        handleEmails();
+        void handleEmails();
       });
 
-      // Clear existing polling interval if any
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
-      }
-
-      // Polling fallback configurável via .env (POLLING_INTERVAL_SECONDS)
-      const pollingSeconds = Number(process.env.POLLING_INTERVAL_SECONDS) || 5;
       pollingInterval = setInterval(() => {
-        handleEmails();
-      }, pollingSeconds * 1000);
+        void handleEmails();
+      }, POLLING_SECONDS * 1_000);
+
+      // Varre uma vez de imediato: podem ter chegado e-mails enquanto
+      // estávamos desconectados.
+      void handleEmails();
     });
   });
 
-  // Handle Imap errors
-  imap.once('error', (err: Error) => {
-    new Errorlogger(`IMAP error: ${err.message}. Reiniciando processo para restabelecer conexão...`);
-    restartProcess();
+  imap.on('error', (err: Error) => {
+    if (isStale()) return;
+    logger.error('Erro de IMAP', err);
+    onDisconnect('Conexão IMAP falhou');
   });
 
-  // Handle connection close - attempt reconnect
-  imap.once('end', () => {
-    console.log('⚠️ IMAP connection ended unexpectedly');
+  // node-imap emite os dois; scheduleReconnect é idempotente via reconnectTimer.
+  imap.on('close', () => onDisconnect('Conexão IMAP fechada'));
+  imap.on('end', () => onDisconnect('Conexão IMAP encerrada'));
 
-    // Clear polling interval
-    if (pollingInterval) {
-      clearInterval(pollingInterval);
-      pollingInterval = null;
-    }
-
-    restartProcess();
-  });
+  imap.connect();
 }
 
-// ✅ Função principal
+// --- Desligamento -----------------------------------------------------------
+
+async function shutdown(signal: string): Promise<void> {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  logger.info(`${signal} recebido, encerrando o listener IMAP...`);
+
+  // Rede de segurança: se o fechamento gracioso travar, saímos assim mesmo
+  // antes do supervisor perder a paciência e mandar SIGKILL.
+  const guard = setTimeout(() => {
+    logger.warn('Desligamento gracioso demorou demais; saindo à força');
+    process.exit(0);
+  }, SHUTDOWN_TIMEOUT_MS);
+  guard.unref();
+
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  teardownConnection();
+
+  connectionGeneration += 1; // silencia os handlers da conexão atual
+  try {
+    imap?.end();
+  } catch {
+    // encerrando de qualquer forma
+  }
+
+  await closeBrowser();
+  process.exit(0);
+}
+
+// --- Início -----------------------------------------------------------------
+
 (function main() {
-  console.log('🚀 Starting Netflix Automation IMAP listener...');
-  setupImapHandlers();
-  imap.connect();
-}());
+  logger.info('Iniciando o listener IMAP da automação Netflix');
+  logger.info(`Polling de reserva a cada ${POLLING_SECONDS}s (o IDLE é o mecanismo primário)`);
+  if (DRY_RUN) {
+    logger.warn('MODO SIMULAÇÃO ativo: nenhum link será aberto e nenhum e-mail será apagado');
+  }
+
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('unhandledRejection', (reason) => {
+    logger.error(`Promise rejeitada sem tratamento: ${describeCause(reason)}`);
+  });
+
+  connectImap();
+})();
